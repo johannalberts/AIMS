@@ -180,13 +180,24 @@ result = aims_graph.invoke(initial_state)
 - **Adaptive Content**: Dynamic lesson content based on mastery gaps
 - **Integration APIs**: LMS and educational platform connectors
 
-## 🤝 Contributing
+## 🤝 Contributing & Usage
 
-We welcome contributions! Please see our contributing guidelines and feel free to submit issues or pull requests.
+**Usage Policy**: This repository is public for educational and demonstration purposes. If you're interested in using, adapting, or building upon this code, please contact me first at [alberts.johann@gmail.com] or open an issue to discuss your intended use case.
 
-## 📄 License
+**Contributing**: We welcome discussions and feedback! Please feel free to:
+- Open issues for questions or suggestions
+- Submit bug reports
+- Propose feature ideas
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+For code contributions, please contact me first to discuss the proposed changes.
+
+## 📄 License & Usage
+
+**Copyright (c) 2025 Johann Alberts. All rights reserved.**
+
+This code is made publicly available for educational and demonstration purposes. While you can view and study the code, any use, reproduction, modification, or distribution requires prior written permission from the author.
+
+**Want to use this code?** Please contact me at [alberts.johann@gmail.com] or open an issue to discuss your use case. I'm happy to consider licensing arrangements for legitimate educational or commercial purposes.
 
 ## 🙋‍♂️ Support
 
