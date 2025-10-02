@@ -69,7 +69,8 @@ app/
 
 - Python 3.12+
 - OpenAI API key
-- Docker (optional)
+- Docker (optional, recommended for MongoDB)
+- uv package manager
 
 ### Installation
 
@@ -78,42 +79,86 @@ app/
 git clone https://github.com/johannalberts/AIMS.git
 cd aims
 
-# Install dependencies using uv
-uv add fastapi uvicorn langgraph langchain-openai
+# Create .env file from example
+cp .env.example .env
 
-# Set environment variables
-export OPENAI_API_KEY="your-api-key-here"
+# Edit .env and add your OpenAI API key
+# OPENAI_API_KEY=your-actual-key-here
+
+# Dependencies are managed by uv - they'll be installed automatically
 ```
+
+### Quick Start (Full Stack with Frontend)
+
+```bash
+# 1. Create .env file with your OpenAI API key
+cp .env.example .env
+# Edit .env and add: OPENAI_API_KEY=your-actual-key-here
+
+# 2. Start MongoDB and initialize test data
+docker compose up -d mongodb
+sleep 5  # Wait for MongoDB to start
+uv run python fixtures/init_lesson_data.py
+
+# 3. Start the FastAPI backend (serves frontend automatically)
+uv run uvicorn app.main:app --reload
+
+# 4. Open your browser
+# Navigate to: http://localhost:8000
+```
+
+You'll see the AIMS assessment interface with the Python OOP test lesson ready to go!
 
 ### Running Locally
 
-#### Option 1: Using uv directly (Recommended for development)
+#### Option 1: Full Stack with Frontend (Recommended)
+
+```bash
+# Start MongoDB
+docker compose up -d mongodb
+
+# Initialize database with Python OOP lesson
+uv run python fixtures/init_lesson_data.py
+
+# Set your OpenAI API key
+export OPENAI_API_KEY="your-api-key-here"
+
+# Run the application (backend + frontend)
+uv run uvicorn app.main:app --reload
+```
+
+**Access the application:**
+- **Frontend Interface**: http://localhost:8000
+- **API Documentation**: http://localhost:8000/docs
+- **ReDoc**: http://localhost:8000/redoc
+
+#### Option 2: Backend Only (API Testing)
 
 ```bash
 # Set your OpenAI API key
 export OPENAI_API_KEY="your-api-key-here"
 
-# Run the application
+# Run just the API
 uv run uvicorn app.main:app --reload
 ```
 
-#### Option 2: Using Docker Compose
+#### Option 3: Using Docker Compose (Everything)
 
 ```bash
 # Build and run the application
-docker-compose up --build
+docker compose up --build
 
 # For subsequent runs (no rebuild needed)
-docker-compose up
+docker compose up
 
 # Run in detached mode
-docker-compose up -d
+docker compose up -d
 
 # View logs
-docker-compose logs -f
+docker compose logs -f
 
 # Stop the application
-docker-compose down
+docker compose down
 ```
 
 **Note**: When using Docker, you can set environment variables in a `.env` file:
@@ -124,11 +169,19 @@ echo "OPENAI_API_KEY=your-api-key-here" > .env
 
 The API will be available at `http://localhost:8000`
 
-### API Documentation
+### Testing the Frontend
 
-Once running, visit:
-- **Interactive docs**: http://localhost:8000/docs
-- **ReDoc**: http://localhost:8000/redoc
+1. **Open** http://localhost:8000 in your browser
+2. **Select** "Python Object-Oriented Programming Fundamentals" lesson
+3. **Click** "Start Assessment"
+4. **Answer** the AI-generated questions
+5. **Experience** adaptive learning as the system:
+   - Rephrases questions if you need clarification
+   - Re-teaches concepts if you're struggling
+   - Advances when you demonstrate mastery (80%+)
+6. **Complete** all 6 learning outcomes to finish
+
+See `static/SETUP.md` for detailed frontend documentation.
 
 ## 📊 Example Assessment Session
 

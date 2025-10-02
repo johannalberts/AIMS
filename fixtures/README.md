@@ -15,7 +15,7 @@ This lesson uses **PyMongo** for database initialization, which is much more con
 ### Quick Setup
 ```bash
 # Start MongoDB
-docker-compose up -d mongodb
+docker compose up -d mongodb
 
 # Initialize database with lesson data
 uv run python fixtures/init_lesson_data.py
