@@ -12,6 +12,7 @@ dependencies = [
     { name = "langchain", extra = ["openai"] },
     { name = "langgraph" },
     { name = "pymongo" },
+    { name = "python-dotenv" },
     { name = "uvicorn" },
 ]
 
@@ -22,6 +23,7 @@ requires-dist = [
     { name = "langchain", extras = ["openai"], specifier = ">=0.3.27" },
     { name = "langgraph", specifier = ">=0.6.7" },
     { name = "pymongo", specifier = ">=4.15.1" },
+    { name = "python-dotenv", specifier = ">=1.1.1" },
     { name = "uvicorn", specifier = ">=0.35.0" },
 ]
 
