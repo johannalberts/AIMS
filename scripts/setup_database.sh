@@ -12,7 +12,7 @@ sleep 5
 
 # Check if MongoDB is running
 if ! docker ps | grep -q "aims_mongodb"; then
-    echo "❌ MongoDB container not found. Please start with: docker-compose up -d mongodb"
+    echo "❌ MongoDB container not found. Please start with: docker compose up -d mongodb"
     exit 1
 fi
 
@@ -26,7 +26,7 @@ if [ $? -eq 0 ]; then
     echo "🎯 Your AIMS system is ready with Python OOP test lesson"
     echo ""
     echo "Next steps:"
-    echo "1. Start the API: docker-compose up web"
+    echo "1. Start the API: docker compose up web"
     echo "2. Access docs: http://localhost:8000/docs"
     echo "3. Test the lesson data with AIMS graph"
 else
