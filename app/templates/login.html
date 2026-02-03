@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+
+{% block title %}Login - AIMS{% endblock %}
+
+{% block content %}
+<div class="auth-container">
+    <div class="auth-card">
+        <h1>🎯 AIMS Login</h1>
+        <p class="subtitle">Adaptive Intelligent Mastery System</p>
+        
+        <form method="post" action="/login" class="auth-form">
+            <div class="form-group">
+                <label for="email">Email</label>
+                <input type="email" id="email" name="email" required autofocus>
+            </div>
+            
+            <div class="form-group">
+                <label for="password">Password</label>
+                <input type="password" id="password" name="password" required>
+            </div>
+            
+            <button type="submit" class="btn btn-primary btn-block">Login</button>
+        </form>
+        
+        <p class="auth-link">
+            Don't have an account? <a href="/register">Register here</a>
+        </p>
+    </div>
+</div>
+{% endblock %}

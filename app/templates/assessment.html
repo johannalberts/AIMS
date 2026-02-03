@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+
+{% block title %}Assessment: {{ lesson.title }} - AIMS{% endblock %}
+
+{% block content %}
+<div class="container" x-data="assessmentApp()">
+    <div class="breadcrumb">
+        <a href="/dashboard">Dashboard</a> / <a href="/course/{{ lesson.course_id }}">Course</a> / Assessment
+    </div>
+    
+    <div class="assessment-container">
+        <!-- Left Sidebar: Progress -->
+        <aside class="assessment-sidebar">
+            <h3>Learning Outcomes</h3>
+            <div class="outcomes-progress">
+                {% for outcome in learning_outcomes %}
+                <div class="outcome-item {% if progress %}{% for p in progress %}{% if p.learning_outcome_id == outcome.id %}{% if p.is_mastered %}mastered{% endif %}{% endif %}{% endfor %}{% endif %}">
+                    <div class="outcome-header">
+                        <span class="outcome-number">{{ loop.index }}</span>
+                        <span class="outcome-key">{{ outcome.key }}</span>
+                    </div>
+                    <p class="outcome-description">{{ outcome.description }}</p>
+                    <div class="outcome-progress-bar">
+                        {% set mastery = 0 %}
+                        {% if progress %}
+                            {% for p in progress %}
+                                {% if p.learning_outcome_id == outcome.id %}
+                                    {% set mastery = (p.mastery_level * 100) | int %}
+                                {% endif %}
+                            {% endfor %}
+                        {% endif %}
+                        <div class="progress-fill" style="width: {{ mastery }}%"></div>
+                    </div>
+                    <span class="outcome-mastery">{{ mastery }}% Mastery</span>
+                </div>
+                {% endfor %}
+            </div>
+        </aside>
+        
+        <!-- Main Chat Interface -->
+        <div class="assessment-main">
+            <div class="lesson-header">
+                <h1>{{ lesson.title }}</h1>
+                <p>{{ lesson.topic }}</p>
+            </div>
+            
+            <!-- Chat Messages -->
+            <div class="chat-container" id="chatContainer">
+                <div class="chat-messages" id="chatMessages">
+                    {% if session.status == "completed" %}
+                    <div class="message system">
+                        <div class="message-content">
+                            🎉 <strong>Congratulations!</strong> You've completed this assessment and achieved mastery of all learning outcomes!
+                        </div>
+                    </div>
+                    {% endif %}
+                    
+                    {% for msg in messages %}
+                        <!-- AI Question -->
+                        <div class="message ai">
+                            <div class="message-avatar">🤖</div>
+                            <div class="message-content">
+                                <div class="message-header">
+                                    <strong>AIMS</strong>
+                                    <span class="message-time">{{ msg.asked_at.strftime('%H:%M') }}</span>
+                                </div>
+                                <div class="message-text">{{ msg.question }}</div>
+                                {% if msg.event_type == "rephrase" %}
+                                <span class="message-badge">🔄 Rephrased</span>
+                                {% elif msg.event_type == "re_teach" %}
+                                <span class="message-badge">📚 Re-teaching</span>
+                                {% endif %}
+                            </div>
+                        </div>
+                        
+                        <!-- User Answer (if exists) -->
+                        {% if msg.answer %}
+                        <div class="message user">
+                            <div class="message-content">
+                                <div class="message-header">
+                                    <strong>You</strong>
+                                    <span class="message-time">{{ msg.answered_at.strftime('%H:%M') }}</span>
+                                </div>
+                                <div class="message-text">{{ msg.answer }}</div>
+                            </div>
+                            <div class="message-avatar">👤</div>
+                        </div>
+                        
+                        <!-- AI Feedback -->
+                        {% if msg.feedback %}
+                        <div class="message ai feedback">
+                            <div class="message-avatar">✨</div>
+                            <div class="message-content">
+                                <div class="message-text">{{ msg.feedback }}</div>
+                                {% if msg.score %}
+                                <div class="score-indicator">
+                                    Score: {{ (msg.score * 100) | int }}%
+                                </div>
+                                {% endif %}
+                            </div>
+                        </div>
+                        {% endif %}
+                        {% endif %}
+                    {% endfor %}
+                    
+                    <!-- HTMX target for new messages -->
+                    <div id="newMessages"></div>
+                </div>
+            </div>
+            
+            <!-- Answer Input (only if not completed) -->
+            {% if session.status != "completed" %}
+            <div class="chat-input-container">
+                <form 
+                    hx-post="/assess/{{ session.session_id }}/answer"
+                    hx-target="#newMessages"
+                    hx-swap="beforeend"
+                    hx-on::after-request="if(event.detail.successful) this.reset(); scrollToBottom();"
+                    class="chat-input-form"
+                >
+                    <textarea 
+                        name="answer" 
+                        placeholder="Type your answer here..." 
+                        rows="3" 
+                        required
+                        x-ref="answerInput"
+                        @keydown.ctrl.enter="$el.form.requestSubmit()"
+                    ></textarea>
+                    <button type="submit" class="btn btn-primary">
+                        Send Answer
+                    </button>
+                </form>
+                <p class="input-hint">💡 Tip: Press Ctrl+Enter to send</p>
+            </div>
+            {% else %}
+            <div class="completion-message">
+                <h2>🎉 Assessment Complete!</h2>
+                <p>You've mastered all learning outcomes for this lesson.</p>
+                <a href="/dashboard" class="btn btn-primary">Return to Dashboard</a>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function assessmentApp() {
+    return {
+        init() {
+            this.scrollToBottom();
+        },
+        scrollToBottom() {
+            const container = document.getElementById('chatMessages');
+            if (container) {
+                container.scrollTop = container.scrollHeight;
+            }
+        }
+    }
+}
+
+// Auto-scroll on new messages
+document.body.addEventListener('htmx:afterSwap', function(event) {
+    const container = document.getElementById('chatMessages');
+    if (container) {
+        setTimeout(() => {
+            container.scrollTop = container.scrollHeight;
+        }, 100);
+    }
+});
+</script>
+{% endblock %}

@@ -12,21 +12,28 @@ services:
       - /app/.venv
     command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     depends_on:
-      - mongodb
+      - postgres
     env_file:
       - .env
     environment:
-      - MONGODB_URL=mongodb://mongodb:27017/aims_db
+      - DATABASE_URL=postgresql://aims_user:aims_password@postgres:5432/aims_db
 
-  mongodb:
-    image: mongo:7.0
-    container_name: aims_mongodb
+  postgres:
+    image: postgres:16-alpine
+    container_name: aims_postgres
     ports:
-      - "27017:27017"
+      - "5432:5432"
     volumes:
-      - mongodb_data:/data/db
+      - postgres_data:/var/lib/postgresql/data
     environment:
-      - MONGO_INITDB_DATABASE=aims_db
+      - POSTGRES_USER=aims_user
+      - POSTGRES_PASSWORD=aims_password
+      - POSTGRES_DB=aims_db
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aims_user -d aims_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
-  mongodb_data:
+  postgres_data:
