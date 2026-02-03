@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+
+{% block title %}{{ course.title }} - AIMS{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="breadcrumb">
+        <a href="/dashboard">Dashboard</a> / {{ course.title }}
+    </div>
+    
+    <div class="course-detail">
+        <h1>{{ course.title }}</h1>
+        <div class="course-meta">
+            <span class="badge">{{ course.subject }}</span>
+            {% if course.difficulty_level %}
+            <span class="badge badge-{{ course.difficulty_level }}">{{ course.difficulty_level }}</span>
+            {% endif %}
+        </div>
+        <p class="course-description">{{ course.description }}</p>
+    </div>
+    
+    <section class="section">
+        <h2>📖 Lessons</h2>
+        <div class="lessons-list">
+            {% for lesson in lessons %}
+            <div class="lesson-card">
+                <div class="lesson-number">{{ loop.index }}</div>
+                <div class="lesson-content">
+                    <h3>{{ lesson.title }}</h3>
+                    <p class="lesson-topic">Topic: {{ lesson.topic }}</p>
+                    <p class="lesson-description">{{ lesson.description }}</p>
+                    <div class="lesson-meta">
+                        {% if lesson.estimated_duration_minutes %}
+                        <span>⏱️ ~{{ lesson.estimated_duration_minutes }} minutes</span>
+                        {% endif %}
+                        <span>🎯 Mastery threshold: {{ (lesson.mastery_threshold * 100) | int }}%</span>
+                    </div>
+                </div>
+                <div class="lesson-actions">
+                    <a href="/lesson/{{ lesson.id }}/start" class="btn btn-primary">Start Assessment</a>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </section>
+</div>
+{% endblock %}

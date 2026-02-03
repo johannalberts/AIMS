@@ -11,3 +11,29 @@ services:
       - .:/app
       - /app/.venv
     command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    depends_on:
+      - postgres
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://aims_user:aims_password@postgres:5432/aims_db
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: aims_postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=aims_user
+      - POSTGRES_PASSWORD=aims_password
+      - POSTGRES_DB=aims_db
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aims_user -d aims_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:

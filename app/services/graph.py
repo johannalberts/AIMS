@@ -1,18 +1,20 @@
-import operator
-from typing import TypedDict, Annotated, List, Literal
+import os
+from typing import TypedDict, List, Literal
+from dotenv import load_dotenv
+
 from langgraph.graph import StateGraph, START, END
-from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage
+from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 
-# Pydantic is often used here, but for simplicity, we'll use TypedDict
-# from typing_extensions import TypedDict is needed for Python < 3.11
+# Load environment variables
+load_dotenv()
 
 # Define the state schema for your AIMS graph
 class LessonState(TypedDict):
     """Represents the state of the AIMS learning session."""
     topic: str
-    learning_outcomes: Annotated[dict, operator.add]
+    learning_outcomes: dict  # Remove the Annotated operator.add - we'll handle updates manually
     current_outcome_key: str
     last_question: str
     last_response: str
@@ -22,7 +24,14 @@ class LessonState(TypedDict):
 class AIMSGraph:
     def __init__(self, llm=None):
         """Initializes the AIMS LangGraph."""
-        self.llm = llm or ChatOpenAI(model="gpt-4o-mini", temperature=0.7)
+        # Get API key and validate
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError("OPENAI_API_KEY environment variable is not set")
+        
+        print(f"🔑 OpenAI API Key loaded: {api_key[:20]}..." if api_key else "❌ No API key found")
+        
+        self.llm = llm or ChatOpenAI(model="gpt-4o-mini", temperature=0.7, api_key=api_key)
         self.workflow = StateGraph(LessonState)
         self._setup_prompts()
         self._build_graph()
@@ -143,7 +152,8 @@ class AIMSGraph:
 
         # Connect other nodes
         self.workflow.add_edge("choose_outcome", "generate_question")
-        self.workflow.add_edge("generate_question", "assess_answer")
+        # STOP after generating question - wait for user response
+        # Don't automatically go to assess_answer
         self.workflow.add_edge("rephrase_question", "assess_answer")
         self.workflow.add_edge("re_teach_concept", "generate_question")
 

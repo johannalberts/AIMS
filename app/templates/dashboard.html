@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - AIMS{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="dashboard-header">
+        <h1>Welcome, {{ user.username }}!</h1>
+        <p>Your Mastery Journey Awaits</p>
+    </div>
+    
+    <!-- Active Sessions -->
+    <section class="section" x-data="{ showActive: true }">
+        <div class="section-header">
+            <h2>📚 My Active Assessments</h2>
+            <button @click="showActive = !showActive" class="btn btn-small">
+                <span x-text="showActive ? 'Hide' : 'Show'"></span>
+            </button>
+        </div>
+        
+        <div x-show="showActive" class="sessions-grid">
+            {% if sessions %}
+                {% for session in sessions %}
+                    {% if session.status == "in_progress" %}
+                    <div class="session-card">
+                        <h3>{{ session.lesson.title }}</h3>
+                        <p class="session-status">In Progress</p>
+                        <p class="session-date">Started: {{ session.started_at.strftime('%Y-%m-%d %H:%M') }}</p>
+                        <a href="/assess/{{ session.session_id }}" class="btn btn-primary">Continue</a>
+                    </div>
+                    {% endif %}
+                {% endfor %}
+            {% else %}
+                <p class="empty-state">No active assessments. Start one below!</p>
+            {% endif %}
+        </div>
+    </section>
+    
+    <!-- Available Courses -->
+    <section class="section">
+        <h2>🎯 Available Courses</h2>
+        <div class="courses-grid">
+            {% for course in courses %}
+            <div class="course-card">
+                <div class="course-header">
+                    <h3>{{ course.title }}</h3>
+                    {% if course.difficulty_level %}
+                    <span class="badge badge-{{ course.difficulty_level }}">{{ course.difficulty_level }}</span>
+                    {% endif %}
+                </div>
+                <p class="course-subject">{{ course.subject }}</p>
+                <p class="course-description">{{ course.description }}</p>
+                <a href="/course/{{ course.id }}" class="btn btn-secondary">View Lessons</a>
+            </div>
+            {% endfor %}
+        </div>
+    </section>
+    
+    <!-- Completed Sessions -->
+    <section class="section" x-data="{ showCompleted: false }">
+        <div class="section-header">
+            <h2>✅ Completed Assessments</h2>
+            <button @click="showCompleted = !showCompleted" class="btn btn-small">
+                <span x-text="showCompleted ? 'Hide' : 'Show'"></span>
+            </button>
+        </div>
+        
+        <div x-show="showCompleted" class="sessions-grid">
+            {% set completed = sessions | selectattr('status', 'equalto', 'completed') | list %}
+            {% if completed %}
+                {% for session in completed %}
+                <div class="session-card completed">
+                    <h3>{{ session.lesson.title }}</h3>
+                    <p class="session-status">✅ Completed</p>
+                    <p class="session-date">Completed: {{ session.completed_at.strftime('%Y-%m-%d %H:%M') }}</p>
+                    <a href="/assess/{{ session.session_id }}" class="btn btn-secondary">View Results</a>
+                </div>
+                {% endfor %}
+            {% else %}
+                <p class="empty-state">No completed assessments yet.</p>
+            {% endif %}
+        </div>
+    </section>
+</div>
+{% endblock %}
