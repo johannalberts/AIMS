@@ -19,13 +19,14 @@ from sqladmin import Admin, ModelView
 from app.database import engine, get_session, create_db_and_tables
 from app.models import (
     User, UserRole, Course, Lesson, LearningOutcome,
-    AssessmentSession, QuestionAnswer, OutcomeProgress
+    AssessmentSession, QuestionAnswer, OutcomeProgress, LearningContent
 )
 from app.auth import (
-    get_current_user, require_user, require_admin,
+    get_current_user, require_user, require_admin, require_content_access,
     authenticate_user, create_user, set_session_cookie, SESSION_COOKIE_NAME
 )
 from app.services.assessment import AssessmentService
+from app.services.content import ContentService
 
 # Configure logging
 logging.basicConfig(
@@ -206,6 +207,43 @@ async def view_course(
     })
 
 
+@app.get("/outcome/{outcome_id}/content", response_class=HTMLResponse)
+async def outcome_content_page(
+    request: Request,
+    outcome_id: int,
+    current_user: User = Depends(require_content_access),
+    session: Session = Depends(get_session)
+):
+    """Learning outcome content management page (Admin only)."""
+    outcome = session.get(LearningOutcome, outcome_id)
+    if not outcome:
+        raise HTTPException(status_code=404, detail="Learning outcome not found")
+    
+    lesson = session.get(Lesson, outcome.lesson_id)
+    course = session.get(Course, lesson.course_id)
+    
+    return templates.TemplateResponse("outcome_content.html", {
+        "request": request,
+        "user": current_user,
+        "outcome": outcome,
+        "lesson": lesson,
+        "course": course
+    })
+
+
+@app.get("/content-management", response_class=HTMLResponse)
+async def content_management_page(
+    request: Request,
+    current_user: User = Depends(require_content_access),
+    session: Session = Depends(get_session)
+):
+    """Comprehensive content management page (Admin and Content Manager)."""
+    return templates.TemplateResponse("content_management.html", {
+        "request": request,
+        "user": current_user
+    })
+
+
 @app.get("/lesson/{lesson_id}/start", response_class=HTMLResponse)
 async def start_lesson(
     request: Request,
@@ -357,6 +395,350 @@ async def get_progress(
 
 
 # ============================================================================
+# Learning Content Management API
+# ============================================================================
+
+@app.get("/api/content-management/all")
+async def get_all_content(
+    current_user: User = Depends(require_content_access),
+    session: Session = Depends(get_session)
+):
+    """Get all courses with lessons, outcomes, and content for management interface."""
+    # Get all active courses
+    courses = session.exec(
+        select(Course).where(Course.is_active == True).order_by(Course.id)
+    ).all()
+    
+    result = {"courses": []}
+    
+    for course in courses:
+        # Get lessons for this course
+        lessons = session.exec(
+            select(Lesson)
+            .where(Lesson.course_id == course.id)
+            .where(Lesson.is_active == True)
+            .order_by(Lesson.order)
+        ).all()
+        
+        course_data = {
+            "id": course.id,
+            "title": course.title,
+            "subject": course.subject,
+            "description": course.description,
+            "difficulty_level": course.difficulty_level,
+            "lessons": []
+        }
+        
+        for lesson in lessons:
+            # Get learning outcomes for this lesson
+            outcomes = session.exec(
+                select(LearningOutcome)
+                .where(LearningOutcome.lesson_id == lesson.id)
+                .where(LearningOutcome.is_active == True)
+                .order_by(LearningOutcome.order)
+            ).all()
+            
+            lesson_data = {
+                "id": lesson.id,
+                "title": lesson.title,
+                "topic": lesson.topic,
+                "description": lesson.description,
+                "learning_outcomes": []
+            }
+            
+            for outcome in outcomes:
+                # Get content for this outcome
+                content_service = ContentService(session)
+                content_chunks = content_service.get_content_for_outcome(
+                    outcome.id,
+                    approved_only=False  # Show all content in management interface
+                )
+                
+                outcome_data = {
+                    "id": outcome.id,
+                    "key": outcome.key,
+                    "description": outcome.description,
+                    "content_chunks": [
+                        {
+                            "id": chunk.id,
+                            "content_text": chunk.content_text,
+                            "content_type": chunk.content_type,
+                            "source": chunk.source,
+                            "approval_status": chunk.approval_status,
+                            "created_at": chunk.created_at.isoformat(),
+                        }
+                        for chunk in content_chunks
+                    ]
+                }
+                
+                lesson_data["learning_outcomes"].append(outcome_data)
+            
+            course_data["lessons"].append(lesson_data)
+        
+        result["courses"].append(course_data)
+    
+    return result
+
+
+@app.get("/api/content/{content_id}")
+async def get_single_content(
+    content_id: int,
+    current_user: User = Depends(require_content_access),
+    session: Session = Depends(get_session)
+):
+    """Get a single content chunk for editing."""
+    content = session.get(LearningContent, content_id)
+    if not content:
+        raise HTTPException(status_code=404, detail="Content not found")
+    
+    return {
+        "id": content.id,
+        "learning_outcome_id": content.learning_outcome_id,
+        "content_text": content.content_text,
+        "content_type": content.content_type,
+        "approval_status": content.approval_status,
+        "source": content.source
+    }
+
+
+@app.post("/api/outcomes/{outcome_id}/process-pdf")
+async def process_pdf_upload(
+    outcome_id: int,
+    file: Annotated[bytes, Form()],
+    current_user: User = Depends(require_content_access),
+    session: Session = Depends(get_session)
+):
+    """Process uploaded PDF and extract text for content creation."""
+    # Verify outcome exists
+    outcome = session.get(LearningOutcome, outcome_id)
+    if not outcome:
+        raise HTTPException(status_code=404, detail="Learning outcome not found")
+    
+    # Check file size (10MB limit)
+    if len(file) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="PDF file too large (max 10MB)")
+    
+    content_service = ContentService(session)
+    
+    try:
+        from io import BytesIO
+        pdf_buffer = BytesIO(file)
+        result = content_service.process_pdf(pdf_buffer, outcome_id)
+        return result
+    except Exception as e:
+        logger.error(f"Error processing PDF: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/outcomes/{outcome_id}/content")
+async def get_outcome_content(
+    outcome_id: int,
+    current_user: User = Depends(require_user),
+    session: Session = Depends(get_session)
+):
+    """Get all content chunks for a learning outcome."""
+    # Verify outcome exists
+    outcome = session.get(LearningOutcome, outcome_id)
+    if not outcome:
+        raise HTTPException(status_code=404, detail="Learning outcome not found")
+    
+    content_service = ContentService(session)
+    
+    # Admins see all content, learners only see approved
+    approved_only = current_user.role != UserRole.ADMIN
+    chunks = content_service.get_content_for_outcome(outcome_id, approved_only=approved_only)
+    
+    return {
+        "learning_outcome_id": outcome_id,
+        "outcome_description": outcome.description,
+        "content_chunks": [
+            {
+                "id": chunk.id,
+                "content_text": chunk.content_text,
+                "content_type": chunk.content_type,
+                "chunk_order": chunk.chunk_order,
+                "source": chunk.source,
+                "approval_status": chunk.approval_status,
+                "created_at": chunk.created_at.isoformat(),
+                "updated_at": chunk.updated_at.isoformat()
+            }
+            for chunk in chunks
+        ]
+    }
+
+
+@app.post("/api/outcomes/{outcome_id}/content")
+async def create_outcome_content(
+    outcome_id: int,
+    content_text: Annotated[str, Form()],
+    content_type: Annotated[str, Form()] = "explanation",
+    current_user: User = Depends(require_content_access),
+    session: Session = Depends(get_session)
+):
+    """Create a new content chunk for a learning outcome (manual upload)."""
+    # Verify outcome exists
+    outcome = session.get(LearningOutcome, outcome_id)
+    if not outcome:
+        raise HTTPException(status_code=404, detail="Learning outcome not found")
+    
+    content_service = ContentService(session)
+    
+    try:
+        # Get current max chunk_order
+        existing_chunks = content_service.get_content_for_outcome(outcome_id, approved_only=False)
+        chunk_order = len(existing_chunks)
+        
+        chunk = content_service.create_content_chunk(
+            learning_outcome_id=outcome_id,
+            content_text=content_text,
+            content_type=content_type,
+            source="manual",
+            user_id=current_user.id,
+            approval_status="approved",
+            chunk_order=chunk_order
+        )
+        
+        return {
+            "id": chunk.id,
+            "learning_outcome_id": chunk.learning_outcome_id,
+            "content_text": chunk.content_text,
+            "content_type": chunk.content_type,
+            "chunk_order": chunk.chunk_order,
+            "source": chunk.source,
+            "approval_status": chunk.approval_status,
+            "message": "Content chunk created successfully"
+        }
+    except Exception as e:
+        logger.error(f"Error creating content chunk: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/outcomes/{outcome_id}/generate-content")
+async def generate_outcome_content(
+    outcome_id: int,
+    current_user: User = Depends(require_content_access),
+    session: Session = Depends(get_session)
+):
+    """Generate learning content for an outcome using LLM."""
+    # Verify outcome exists
+    outcome = session.get(LearningOutcome, outcome_id)
+    if not outcome:
+        raise HTTPException(status_code=404, detail="Learning outcome not found")
+    
+    content_service = ContentService(session)
+    
+    try:
+        result = content_service.generate_content_for_outcome(
+            learning_outcome_id=outcome_id,
+            user_id=current_user.id
+        )
+        
+        return result
+    except Exception as e:
+        logger.error(f"Error generating content: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/outcomes/{outcome_id}/save-generated-content")
+async def save_generated_content(
+    outcome_id: int,
+    request: Request,
+    current_user: User = Depends(require_content_access),
+    session: Session = Depends(get_session)
+):
+    """Save LLM-generated content chunks after admin review."""
+    # Verify outcome exists
+    outcome = session.get(LearningOutcome, outcome_id)
+    if not outcome:
+        raise HTTPException(status_code=404, detail="Learning outcome not found")
+    
+    # Get chunks from request body
+    body = await request.json()
+    chunks = body.get("chunks", [])
+    
+    if not chunks:
+        raise HTTPException(status_code=400, detail="No chunks provided")
+    
+    content_service = ContentService(session)
+    
+    try:
+        saved_chunks = content_service.save_generated_content(
+            learning_outcome_id=outcome_id,
+            chunks=chunks,
+            user_id=current_user.id,
+            approval_status="approved"
+        )
+        
+        return {
+            "message": f"Successfully saved {len(saved_chunks)} content chunks",
+            "chunks": [
+                {
+                    "id": chunk.id,
+                    "content_type": chunk.content_type,
+                    "chunk_order": chunk.chunk_order
+                }
+                for chunk in saved_chunks
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Error saving generated content: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/content/{content_id}")
+async def update_content_chunk(
+    content_id: int,
+    request: Request,
+    current_user: User = Depends(require_content_access),
+    session: Session = Depends(get_session)
+):
+    """Update a content chunk."""
+    body = await request.json()
+    
+    content_service = ContentService(session)
+    
+    try:
+        updated_chunk = content_service.update_content_chunk(
+            content_id=content_id,
+            content_text=body.get("content_text"),
+            content_type=body.get("content_type"),
+            approval_status=body.get("approval_status"),
+            approved_by_user_id=current_user.id
+        )
+        
+        if not updated_chunk:
+            raise HTTPException(status_code=404, detail="Content chunk not found")
+        
+        return {
+            "id": updated_chunk.id,
+            "content_text": updated_chunk.content_text,
+            "content_type": updated_chunk.content_type,
+            "approval_status": updated_chunk.approval_status,
+            "message": "Content chunk updated successfully"
+        }
+    except Exception as e:
+        logger.error(f"Error updating content chunk: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/content/{content_id}")
+async def delete_content_chunk(
+    content_id: int,
+    current_user: User = Depends(require_content_access),
+    session: Session = Depends(get_session)
+):
+    """Delete a content chunk."""
+    content_service = ContentService(session)
+    
+    success = content_service.delete_content_chunk(content_id)
+    
+    if not success:
+        raise HTTPException(status_code=404, detail="Content chunk not found")
+    
+    return {"message": "Content chunk deleted successfully"}
+
+
+# ============================================================================
 # SQLAdmin Setup
 # ============================================================================
 
@@ -386,7 +768,15 @@ class LearningOutcomeAdmin(ModelView, model=LearningOutcome):
     """Admin view for LearningOutcome model."""
     column_list = [LearningOutcome.id, LearningOutcome.key, LearningOutcome.lesson_id, LearningOutcome.order]
     column_searchable_list = [LearningOutcome.key, LearningOutcome.description]
-    form_excluded_columns = [LearningOutcome.outcome_progress, LearningOutcome.created_at, LearningOutcome.updated_at]
+    form_excluded_columns = [LearningOutcome.outcome_progress, LearningOutcome.content_chunks, LearningOutcome.created_at, LearningOutcome.updated_at]
+
+
+class LearningContentAdmin(ModelView, model=LearningContent):
+    """Admin view for LearningContent model."""
+    column_list = [LearningContent.id, LearningContent.learning_outcome_id, LearningContent.content_type, LearningContent.approval_status, LearningContent.source]
+    column_searchable_list = [LearningContent.content_text]
+    column_details_exclude_list = [LearningContent.embedding]  # Exclude vector from detail view
+    form_excluded_columns = [LearningContent.embedding, LearningContent.created_at, LearningContent.updated_at]
 
 
 class AssessmentSessionAdmin(ModelView, model=AssessmentSession):
@@ -402,6 +792,7 @@ admin.add_view(UserAdmin)
 admin.add_view(CourseAdmin)
 admin.add_view(LessonAdmin)
 admin.add_view(LearningOutcomeAdmin)
+admin.add_view(LearningContentAdmin)
 admin.add_view(AssessmentSessionAdmin)
 
 # ============================================================================

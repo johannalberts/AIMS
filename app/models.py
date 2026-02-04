@@ -2,10 +2,12 @@
 SQLModel database models for AIMS platform.
 """
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Any
 from enum import Enum
 
-from sqlmodel import SQLModel, Field, Relationship
+from sqlmodel import SQLModel, Field, Relationship, Column
+from sqlalchemy import Text
+from pgvector.sqlalchemy import Vector
 import bcrypt
 
 # No longer using passlib - using bcrypt directly
@@ -13,8 +15,9 @@ import bcrypt
 
 class UserRole(str, Enum):
     """User role enumeration."""
-    ADMIN = "admin"
-    LEARNER = "learner"
+    ADMIN = "ADMIN"
+    CONTENT_MANAGER = "CONTENT_MANAGER"
+    LEARNER = "LEARNER"
 
 
 class User(SQLModel, table=True):
@@ -104,6 +107,38 @@ class LearningOutcome(SQLModel, table=True):
     # Relationships
     lesson: Lesson = Relationship(back_populates="learning_outcomes")
     outcome_progress: List["OutcomeProgress"] = Relationship(back_populates="learning_outcome")
+    content_chunks: List["LearningContent"] = Relationship(back_populates="learning_outcome")
+
+
+class LearningContent(SQLModel, table=True):
+    """Learning content chunks with vector embeddings for each Learning Outcome."""
+    __tablename__ = "learning_contents"
+    
+    id: Optional[int] = Field(default=None, primary_key=True)
+    learning_outcome_id: int = Field(foreign_key="learning_outcomes.id", index=True)
+    lesson_id: int = Field(foreign_key="lessons.id", index=True)  # Denormalized for efficient filtering
+    
+    # Content fields
+    content_text: str = Field(sa_column=Column(Text))
+    content_type: str = Field(default="explanation")  # explanation, example, definition, procedure, common_errors
+    chunk_order: int = Field(default=0)
+    
+    # Vector embedding (1536 dimensions for OpenAI ada-002/ada-003)
+    embedding: Optional[Any] = Field(default=None, sa_column=Column(Vector(1536)))
+    
+    # Metadata
+    source: str = Field(default="manual")  # manual, llm_generated, imported
+    approval_status: str = Field(default="approved")  # pending, approved, rejected
+    created_by_user_id: Optional[int] = Field(default=None, foreign_key="users.id")
+    approved_by_user_id: Optional[int] = Field(default=None, foreign_key="users.id")
+    
+    # Timestamps
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    approved_at: Optional[datetime] = None
+    
+    # Relationships
+    learning_outcome: LearningOutcome = Relationship(back_populates="content_chunks")
 
 
 class AssessmentSession(SQLModel, table=True):

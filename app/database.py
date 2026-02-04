@@ -2,11 +2,15 @@
 Database configuration and session management.
 """
 import os
+import logging
 from typing import Generator
 from sqlmodel import SQLModel, create_engine, Session
+from sqlalchemy import text
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 # Database URL from environment
 DATABASE_URL = os.getenv(
@@ -23,7 +27,17 @@ engine = create_engine(
 
 
 def create_db_and_tables():
-    """Create all database tables."""
+    """Create all database tables. Ensures pgvector extension is enabled first."""
+    # Enable pgvector extension before creating tables
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
+            conn.commit()
+        logger.info("✅ pgvector extension enabled")
+    except Exception as e:
+        logger.warning(f"Could not enable pgvector extension (may already exist): {e}")
+    
+    # Create tables
     SQLModel.metadata.create_all(engine)
 
 

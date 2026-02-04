@@ -94,6 +94,18 @@ def require_admin(
     return current_user
 
 
+def require_content_access(
+    current_user: User = Depends(require_user)
+) -> User:
+    """Require admin or content manager user."""
+    if current_user.role not in [UserRole.ADMIN, UserRole.CONTENT_MANAGER]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Content management access required"
+        )
+    return current_user
+
+
 def authenticate_user(
     email: str,
     password: str,
