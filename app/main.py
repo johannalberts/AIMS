@@ -398,6 +398,296 @@ async def get_progress(
 # Learning Content Management API
 # ============================================================================
 
+# ---------- Course CRUD ----------
+
+@app.post("/api/courses")
+async def create_course(
+    title: Annotated[str, Form()],
+    subject: Annotated[str, Form()],
+    description: Annotated[str, Form()] = "",
+    difficulty_level: Annotated[str, Form()] = "beginner",
+    current_user: User = Depends(require_content_access),
+    session: Session = Depends(get_session)
+):
+    """Create a new course."""
+    course = Course(
+        title=title,
+        subject=subject,
+        description=description,
+        difficulty_level=difficulty_level
+    )
+    session.add(course)
+    session.commit()
+    session.refresh(course)
+    
+    return {
+        "id": course.id,
+        "title": course.title,
+        "subject": course.subject,
+        "description": course.description,
+        "difficulty_level": course.difficulty_level
+    }
+
+
+@app.put("/api/courses/{course_id}")
+async def update_course(
+    course_id: int,
+    title: Annotated[str, Form()],
+    subject: Annotated[str, Form()],
+    description: Annotated[str, Form()] = "",
+    difficulty_level: Annotated[str, Form()] = "beginner",
+    current_user: User = Depends(require_content_access),
+    session: Session = Depends(get_session)
+):
+    """Update a course."""
+    course = session.get(Course, course_id)
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    
+    course.title = title
+    course.subject = subject
+    course.description = description
+    course.difficulty_level = difficulty_level
+    course.updated_at = datetime.utcnow()
+    
+    session.add(course)
+    session.commit()
+    session.refresh(course)
+    
+    return {
+        "id": course.id,
+        "title": course.title,
+        "subject": course.subject,
+        "description": course.description,
+        "difficulty_level": course.difficulty_level
+    }
+
+
+@app.delete("/api/courses/{course_id}")
+async def delete_course(
+    course_id: int,
+    current_user: User = Depends(require_content_access),
+    session: Session = Depends(get_session)
+):
+    """Delete a course (soft delete)."""
+    course = session.get(Course, course_id)
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    
+    course.is_active = False
+    course.updated_at = datetime.utcnow()
+    session.add(course)
+    session.commit()
+    
+    return {"success": True}
+
+
+# ---------- Lesson CRUD ----------
+
+@app.post("/api/courses/{course_id}/lessons")
+async def create_lesson(
+    course_id: int,
+    title: Annotated[str, Form()],
+    topic: Annotated[str, Form()],
+    description: Annotated[str, Form()] = "",
+    estimated_duration_minutes: Annotated[int, Form()] = 60,
+    mastery_threshold: Annotated[float, Form()] = 0.8,
+    current_user: User = Depends(require_content_access),
+    session: Session = Depends(get_session)
+):
+    """Create a new lesson for a course."""
+    course = session.get(Course, course_id)
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    
+    # Get the next order number
+    existing_lessons = session.exec(
+        select(Lesson).where(Lesson.course_id == course_id)
+    ).all()
+    next_order = max([l.order for l in existing_lessons], default=-1) + 1
+    
+    lesson = Lesson(
+        course_id=course_id,
+        title=title,
+        topic=topic,
+        description=description,
+        order=next_order,
+        estimated_duration_minutes=estimated_duration_minutes,
+        mastery_threshold=mastery_threshold
+    )
+    session.add(lesson)
+    session.commit()
+    session.refresh(lesson)
+    
+    return {
+        "id": lesson.id,
+        "course_id": lesson.course_id,
+        "title": lesson.title,
+        "topic": lesson.topic,
+        "description": lesson.description,
+        "order": lesson.order,
+        "estimated_duration_minutes": lesson.estimated_duration_minutes,
+        "mastery_threshold": lesson.mastery_threshold
+    }
+
+
+@app.put("/api/lessons/{lesson_id}")
+async def update_lesson(
+    lesson_id: int,
+    title: Annotated[str, Form()],
+    topic: Annotated[str, Form()],
+    description: Annotated[str, Form()] = "",
+    estimated_duration_minutes: Annotated[int, Form()] = 60,
+    mastery_threshold: Annotated[float, Form()] = 0.8,
+    current_user: User = Depends(require_content_access),
+    session: Session = Depends(get_session)
+):
+    """Update a lesson."""
+    lesson = session.get(Lesson, lesson_id)
+    if not lesson:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+    
+    lesson.title = title
+    lesson.topic = topic
+    lesson.description = description
+    lesson.estimated_duration_minutes = estimated_duration_minutes
+    lesson.mastery_threshold = mastery_threshold
+    lesson.updated_at = datetime.utcnow()
+    
+    session.add(lesson)
+    session.commit()
+    session.refresh(lesson)
+    
+    return {
+        "id": lesson.id,
+        "course_id": lesson.course_id,
+        "title": lesson.title,
+        "topic": lesson.topic,
+        "description": lesson.description,
+        "estimated_duration_minutes": lesson.estimated_duration_minutes,
+        "mastery_threshold": lesson.mastery_threshold
+    }
+
+
+@app.delete("/api/lessons/{lesson_id}")
+async def delete_lesson(
+    lesson_id: int,
+    current_user: User = Depends(require_content_access),
+    session: Session = Depends(get_session)
+):
+    """Delete a lesson (soft delete)."""
+    lesson = session.get(Lesson, lesson_id)
+    if not lesson:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+    
+    lesson.is_active = False
+    lesson.updated_at = datetime.utcnow()
+    session.add(lesson)
+    session.commit()
+    
+    return {"success": True}
+
+
+# ---------- Learning Outcome CRUD ----------
+
+@app.post("/api/lessons/{lesson_id}/outcomes")
+async def create_learning_outcome(
+    lesson_id: int,
+    key: Annotated[str, Form()],
+    description: Annotated[str, Form()],
+    key_concepts: Annotated[str, Form()] = "",
+    examples: Annotated[str, Form()] = "",
+    current_user: User = Depends(require_content_access),
+    session: Session = Depends(get_session)
+):
+    """Create a new learning outcome for a lesson."""
+    lesson = session.get(Lesson, lesson_id)
+    if not lesson:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+    
+    # Get the next order number
+    existing_outcomes = session.exec(
+        select(LearningOutcome).where(LearningOutcome.lesson_id == lesson_id)
+    ).all()
+    next_order = max([o.order for o in existing_outcomes], default=-1) + 1
+    
+    outcome = LearningOutcome(
+        lesson_id=lesson_id,
+        key=key,
+        description=description,
+        order=next_order,
+        key_concepts=key_concepts if key_concepts else None,
+        examples=examples if examples else None
+    )
+    session.add(outcome)
+    session.commit()
+    session.refresh(outcome)
+    
+    return {
+        "id": outcome.id,
+        "lesson_id": outcome.lesson_id,
+        "key": outcome.key,
+        "description": outcome.description,
+        "order": outcome.order,
+        "key_concepts": outcome.key_concepts,
+        "examples": outcome.examples
+    }
+
+
+@app.put("/api/outcomes/{outcome_id}")
+async def update_learning_outcome(
+    outcome_id: int,
+    key: Annotated[str, Form()],
+    description: Annotated[str, Form()],
+    key_concepts: Annotated[str, Form()] = "",
+    examples: Annotated[str, Form()] = "",
+    current_user: User = Depends(require_content_access),
+    session: Session = Depends(get_session)
+):
+    """Update a learning outcome."""
+    outcome = session.get(LearningOutcome, outcome_id)
+    if not outcome:
+        raise HTTPException(status_code=404, detail="Learning outcome not found")
+    
+    outcome.key = key
+    outcome.description = description
+    outcome.key_concepts = key_concepts if key_concepts else None
+    outcome.examples = examples if examples else None
+    outcome.updated_at = datetime.utcnow()
+    
+    session.add(outcome)
+    session.commit()
+    session.refresh(outcome)
+    
+    return {
+        "id": outcome.id,
+        "lesson_id": outcome.lesson_id,
+        "key": outcome.key,
+        "description": outcome.description,
+        "key_concepts": outcome.key_concepts,
+        "examples": outcome.examples
+    }
+
+
+@app.delete("/api/outcomes/{outcome_id}")
+async def delete_learning_outcome(
+    outcome_id: int,
+    current_user: User = Depends(require_content_access),
+    session: Session = Depends(get_session)
+):
+    """Delete a learning outcome (soft delete)."""
+    outcome = session.get(LearningOutcome, outcome_id)
+    if not outcome:
+        raise HTTPException(status_code=404, detail="Learning outcome not found")
+    
+    outcome.is_active = False
+    outcome.updated_at = datetime.utcnow()
+    session.add(outcome)
+    session.commit()
+    
+    return {"success": True}
+
+
 @app.get("/api/content-management/all")
 async def get_all_content(
     current_user: User = Depends(require_content_access),
@@ -639,6 +929,282 @@ async def generate_outcome_content(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/outcomes/{outcome_id}/generate-and-save-content")
+async def generate_and_save_outcome_content(
+    outcome_id: int,
+    current_user: User = Depends(require_content_access),
+    session: Session = Depends(get_session)
+):
+    """Generate and immediately save learning content for an outcome (for bulk operations)."""
+    # Verify outcome exists
+    outcome = session.get(LearningOutcome, outcome_id)
+    if not outcome:
+        raise HTTPException(status_code=404, detail="Learning outcome not found")
+    
+    content_service = ContentService(session)
+    
+    try:
+        result = content_service.generate_and_save_content(
+            learning_outcome_id=outcome_id,
+            user_id=current_user.id,
+            approval_status="approved"  # Auto-approve for bulk generation
+        )
+        
+        return result
+    except Exception as e:
+        logger.error(f"Error generating and saving content: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/lessons/suggest-structure")
+async def suggest_lesson_structure(
+    request: Request,
+    current_user: User = Depends(require_content_access),
+    session: Session = Depends(get_session)
+):
+    """Generate AI-suggested lesson structure with learning outcomes."""
+    body = await request.json()
+    
+    lesson_title = body.get("lesson_title", "")
+    lesson_topic = body.get("lesson_topic", "")
+    lesson_description = body.get("lesson_description", "")
+    course_id = body.get("course_id")
+    
+    if not lesson_title or not lesson_topic:
+        raise HTTPException(status_code=400, detail="Lesson title and topic are required")
+    
+    # Get course context if course_id provided
+    course_context = ""
+    if course_id:
+        course = session.get(Course, course_id)
+        if course:
+            course_context = f"{course.title} - {course.subject} ({course.difficulty_level})"
+    
+    content_service = ContentService(session)
+    
+    try:
+        result = content_service.suggest_lesson_structure(
+            lesson_title=lesson_title,
+            lesson_topic=lesson_topic,
+            lesson_description=lesson_description,
+            course_context=course_context
+        )
+        
+        return result
+    except Exception as e:
+        logger.error(f"Error suggesting lesson structure: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/lessons/create-from-suggestion")
+async def create_lesson_from_suggestion(
+    request: Request,
+    current_user: User = Depends(require_content_access),
+    session: Session = Depends(get_session)
+):
+    """Create a lesson and learning outcomes from AI suggestion after approval."""
+    body = await request.json()
+    
+    course_id = body.get("course_id")
+    lesson_title = body.get("lesson_title")
+    lesson_topic = body.get("lesson_topic")
+    lesson_description = body.get("lesson_description", "")
+    lesson_overview = body.get("lesson_overview", "")
+    estimated_duration_minutes = body.get("estimated_duration_minutes", 60)
+    learning_outcomes = body.get("learning_outcomes", [])
+    
+    if not course_id or not lesson_title or not lesson_topic:
+        raise HTTPException(status_code=400, detail="Course ID, lesson title, and topic are required")
+    
+    # Verify course exists
+    course = session.get(Course, course_id)
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    
+    try:
+        # Get the next order number
+        existing_lessons = session.exec(
+            select(Lesson).where(Lesson.course_id == course_id)
+        ).all()
+        next_order = max([l.order for l in existing_lessons], default=-1) + 1
+        
+        # Create the lesson
+        lesson = Lesson(
+            course_id=course_id,
+            title=lesson_title,
+            topic=lesson_topic,
+            description=lesson_overview if lesson_overview else lesson_description,
+            order=next_order,
+            estimated_duration_minutes=estimated_duration_minutes
+        )
+        session.add(lesson)
+        session.flush()  # Get lesson ID without committing
+        
+        # Create learning outcomes
+        created_outcomes = []
+        for idx, lo_data in enumerate(learning_outcomes):
+            outcome = LearningOutcome(
+                lesson_id=lesson.id,
+                key=lo_data.get("key", f"outcome_{idx}"),
+                description=lo_data.get("description", ""),
+                order=idx,
+                key_concepts=lo_data.get("key_concepts"),
+                examples=lo_data.get("examples")
+            )
+            session.add(outcome)
+            created_outcomes.append({
+                "key": outcome.key,
+                "description": outcome.description,
+                "order": outcome.order
+            })
+        
+        session.commit()
+        session.refresh(lesson)
+        
+        return {
+            "lesson": {
+                "id": lesson.id,
+                "course_id": lesson.course_id,
+                "title": lesson.title,
+                "topic": lesson.topic,
+                "description": lesson.description,
+                "order": lesson.order,
+                "estimated_duration_minutes": lesson.estimated_duration_minutes
+            },
+            "learning_outcomes": created_outcomes,
+            "success": True
+        }
+        
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Error creating lesson from suggestion: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/courses/suggest-structure")
+async def suggest_course_structure(
+    request: Request,
+    current_user: User = Depends(require_content_access),
+    session: Session = Depends(get_session)
+):
+    """Generate AI-suggested complete course structure with lessons and learning outcomes."""
+    body = await request.json()
+    
+    course_title = body.get("title", "")
+    subject = body.get("subject", "")
+    description = body.get("description", "")
+    difficulty_level = body.get("difficulty_level", "intermediate")
+    
+    if not course_title or not subject:
+        raise HTTPException(status_code=400, detail="Course title and subject are required")
+    
+    content_service = ContentService(session)
+    
+    try:
+        result = content_service.suggest_course_structure(
+            course_title=course_title,
+            subject=subject,
+            description=description,
+            difficulty_level=difficulty_level
+        )
+        
+        return result
+    except Exception as e:
+        logger.error(f"Error suggesting course structure: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/courses/create-from-suggestion")
+async def create_course_from_suggestion(
+    request: Request,
+    current_user: User = Depends(require_content_access),
+    session: Session = Depends(get_session)
+):
+    """Create a course with lessons and learning outcomes from AI suggestion after approval."""
+    body = await request.json()
+    
+    course_title = body.get("title")
+    subject = body.get("subject")
+    description = body.get("description", "")
+    difficulty_level = body.get("difficulty_level", "intermediate")
+    lessons_data = body.get("lessons", [])
+    
+    if not course_title or not subject:
+        raise HTTPException(status_code=400, detail="Course title and subject are required")
+    
+    try:
+        # Create the course
+        course = Course(
+            title=course_title,
+            subject=subject,
+            description=description,
+            difficulty_level=difficulty_level
+        )
+        session.add(course)
+        session.flush()  # Get course ID without committing
+        
+        # Create lessons and learning outcomes
+        created_lessons = []
+        for lesson_idx, lesson_data in enumerate(lessons_data):
+            lesson = Lesson(
+                course_id=course.id,
+                title=lesson_data.get("title", ""),
+                topic=lesson_data.get("topic", ""),
+                description=lesson_data.get("description", ""),
+                order=lesson_idx,
+                estimated_duration_minutes=lesson_data.get("estimated_duration_minutes", 60)
+            )
+            session.add(lesson)
+            session.flush()  # Get lesson ID
+            
+            # Create learning outcomes for this lesson
+            created_outcomes = []
+            for outcome_idx, outcome_data in enumerate(lesson_data.get("learning_outcomes", [])):
+                outcome = LearningOutcome(
+                    lesson_id=lesson.id,
+                    key=outcome_data.get("key", f"outcome_{outcome_idx}"),
+                    description=outcome_data.get("description", ""),
+                    order=outcome_idx,
+                    key_concepts=outcome_data.get("key_concepts"),
+                    examples=outcome_data.get("examples")
+                )
+                session.add(outcome)
+                created_outcomes.append({
+                    "key": outcome.key,
+                    "description": outcome.description,
+                    "order": outcome.order
+                })
+            
+            created_lessons.append({
+                "id": lesson.id,
+                "title": lesson.title,
+                "topic": lesson.topic,
+                "description": lesson.description,
+                "order": lesson.order,
+                "learning_outcomes": created_outcomes
+            })
+        
+        session.commit()
+        session.refresh(course)
+        
+        return {
+            "course": {
+                "id": course.id,
+                "title": course.title,
+                "subject": course.subject,
+                "description": course.description,
+                "difficulty_level": course.difficulty_level
+            },
+            "lessons": created_lessons,
+            "success": True
+        }
+        
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Error creating course from suggestion: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/outcomes/{outcome_id}/save-generated-content")
 async def save_generated_content(
     outcome_id: int,
@@ -682,6 +1248,56 @@ async def save_generated_content(
         }
     except Exception as e:
         logger.error(f"Error saving generated content: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/content")
+async def create_content_chunk(
+    request: Request,
+    current_user: User = Depends(require_content_access),
+    session: Session = Depends(get_session)
+):
+    """Create a new content chunk."""
+    form = await request.form()
+    
+    outcome_id = int(form.get("outcome_id"))
+    content_type = form.get("content_type", "explanation")
+    content_text = form.get("content_text")
+    
+    if not outcome_id or not content_text:
+        raise HTTPException(status_code=400, detail="Outcome ID and content text are required")
+    
+    # Verify outcome exists
+    outcome = session.get(LearningOutcome, outcome_id)
+    if not outcome:
+        raise HTTPException(status_code=404, detail="Learning outcome not found")
+    
+    content_service = ContentService(session)
+    
+    try:
+        # Get current max chunk order for this outcome
+        existing_chunks = content_service.get_content_for_outcome(outcome_id, approved_only=False)
+        next_order = max([c.chunk_order for c in existing_chunks], default=-1) + 1
+        
+        chunk = content_service.create_content_chunk(
+            learning_outcome_id=outcome_id,
+            content_text=content_text,
+            content_type=content_type,
+            chunk_order=next_order,
+            source="manual",
+            user_id=current_user.id,
+            approval_status="approved"
+        )
+        
+        return {
+            "id": chunk.id,
+            "content_text": chunk.content_text,
+            "content_type": chunk.content_type,
+            "chunk_order": chunk.chunk_order,
+            "message": "Content chunk created successfully"
+        }
+    except Exception as e:
+        logger.error(f"Error creating content chunk: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
