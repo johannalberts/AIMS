@@ -349,12 +349,14 @@ async def submit_answer(
     service = AssessmentService(db_session)
     result = service.process_answer(assessment.id, answer)
     
-    # Return HTML fragment with feedback
+    # Return HTML fragment with feedback and next question
     return templates.TemplateResponse("partials/feedback.html", {
         "request": {},
         "feedback": result["feedback"],
         "score": result.get("score"),
-        "status": result["status"]
+        "status": result["status"],
+        "next_question": result.get("next_question"),
+        "current_outcome": result.get("current_outcome")
     })
 
 
@@ -392,6 +394,47 @@ async def get_progress(
             for p in progress
         ]
     }
+
+
+@app.delete("/api/assessment/{session_id}")
+async def delete_assessment_session(
+    session_id: str,
+    current_user: User = Depends(require_user),
+    db_session: Session = Depends(get_session)
+):
+    """Delete an assessment session and all related data."""
+    statement = select(AssessmentSession).where(
+        AssessmentSession.session_id == session_id
+    )
+    assessment = db_session.exec(statement).first()
+    
+    if not assessment:
+        raise HTTPException(status_code=404, detail="Assessment session not found")
+    
+    if assessment.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to delete this assessment")
+    
+    # Delete related data (SQLModel will handle cascade if configured, but let's be explicit)
+    # Delete all question answers
+    db_session.exec(
+        select(QuestionAnswer).where(QuestionAnswer.session_id == assessment.id)
+    ).all()
+    for qa in db_session.exec(
+        select(QuestionAnswer).where(QuestionAnswer.session_id == assessment.id)
+    ).all():
+        db_session.delete(qa)
+    
+    # Delete all outcome progress
+    for progress in db_session.exec(
+        select(OutcomeProgress).where(OutcomeProgress.session_id == assessment.id)
+    ).all():
+        db_session.delete(progress)
+    
+    # Delete the session itself
+    db_session.delete(assessment)
+    db_session.commit()
+    
+    return {"message": "Assessment session deleted successfully"}
 
 
 # ============================================================================
@@ -744,10 +787,22 @@ async def get_all_content(
                     approved_only=False  # Show all content in management interface
                 )
                 
+                # Parse key_concepts from JSON if it's a string
+                import json
+                key_concepts = outcome.key_concepts
+                if key_concepts and isinstance(key_concepts, str):
+                    try:
+                        key_concepts = json.loads(key_concepts)
+                    except:
+                        # If it fails, split by comma as fallback
+                        key_concepts = [k.strip() for k in key_concepts.split(',') if k.strip()]
+                
                 outcome_data = {
                     "id": outcome.id,
                     "key": outcome.key,
                     "description": outcome.description,
+                    "key_concepts": key_concepts,
+                    "examples": outcome.examples,
                     "content_chunks": [
                         {
                             "id": chunk.id,
@@ -1043,12 +1098,18 @@ async def create_lesson_from_suggestion(
         # Create learning outcomes
         created_outcomes = []
         for idx, lo_data in enumerate(learning_outcomes):
+            # Convert key_concepts array to JSON string if it's a list
+            key_concepts = lo_data.get("key_concepts")
+            if isinstance(key_concepts, list):
+                import json
+                key_concepts = json.dumps(key_concepts)
+            
             outcome = LearningOutcome(
                 lesson_id=lesson.id,
                 key=lo_data.get("key", f"outcome_{idx}"),
                 description=lo_data.get("description", ""),
                 order=idx,
-                key_concepts=lo_data.get("key_concepts"),
+                key_concepts=key_concepts,
                 examples=lo_data.get("examples")
             )
             session.add(outcome)
@@ -1160,12 +1221,18 @@ async def create_course_from_suggestion(
             # Create learning outcomes for this lesson
             created_outcomes = []
             for outcome_idx, outcome_data in enumerate(lesson_data.get("learning_outcomes", [])):
+                # Convert key_concepts array to JSON string if it's a list
+                key_concepts = outcome_data.get("key_concepts")
+                if isinstance(key_concepts, list):
+                    import json
+                    key_concepts = json.dumps(key_concepts)
+                
                 outcome = LearningOutcome(
                     lesson_id=lesson.id,
                     key=outcome_data.get("key", f"outcome_{outcome_idx}"),
                     description=outcome_data.get("description", ""),
                     order=outcome_idx,
-                    key_concepts=outcome_data.get("key_concepts"),
+                    key_concepts=key_concepts,
                     examples=outcome_data.get("examples")
                 )
                 session.add(outcome)

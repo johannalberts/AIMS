@@ -59,8 +59,19 @@ class AssessmentService:
         # Build learning outcomes dict for LangGraph
         learning_outcomes_dict = {}
         for outcome in outcomes:
+            # Parse key_concepts if it's a JSON string
+            import json
+            key_concepts = outcome.key_concepts
+            if key_concepts and isinstance(key_concepts, str):
+                try:
+                    key_concepts = json.loads(key_concepts)
+                except:
+                    # If it fails, split by comma as fallback
+                    key_concepts = [k.strip() for k in key_concepts.split(',') if k.strip()]
+            
             learning_outcomes_dict[outcome.key] = {
                 "description": outcome.description,
+                "key_concepts": key_concepts,
                 "mastery_level": 0.0
             }
         
@@ -70,8 +81,11 @@ class AssessmentService:
             learning_outcomes=learning_outcomes_dict
         )
         
-        # Generate first question
-        result = self.graph.invoke(initial_state)
+        # Generate first question with thread_id (session_id for conversation continuity)
+        # This allows the checkpointer to persist state across turns
+        config = {"configurable": {"thread_id": str(assessment.session_id)}}
+        logger.info(f"Starting assessment with thread_id: {assessment.session_id}")
+        result = self.graph.invoke(initial_state, config)
         
         # Update assessment session with current state
         assessment.current_outcome_key = result.get("current_outcome_key")
@@ -124,8 +138,19 @@ class AssessmentService:
                 (p for p in progress_records if p.learning_outcome_id == outcome.id),
                 None
             )
+            # Parse key_concepts if it's a JSON string
+            import json
+            key_concepts = outcome.key_concepts
+            if key_concepts and isinstance(key_concepts, str):
+                try:
+                    key_concepts = json.loads(key_concepts)
+                except:
+                    # If it fails, split by comma as fallback
+                    key_concepts = [k.strip() for k in key_concepts.split(',') if k.strip()]
+            
             learning_outcomes_dict[outcome.key] = {
                 "description": outcome.description,
+                "key_concepts": key_concepts,
                 "mastery_level": progress.mastery_level if progress else 0.0
             }
         
@@ -137,11 +162,23 @@ class AssessmentService:
             "last_question": assessment.last_question,
             "last_response": answer,
             "failed_attempts": assessment.failed_attempts,
-            "feedback": ""
+            "feedback": "",
+            "concepts_covered": {}  # Will be loaded from checkpoint if exists
         }
         
-        # Process through LangGraph
-        result = self.graph.invoke(current_state)
+        # Process through LangGraph WITH thread_id for state persistence
+        # The checkpointer will automatically load previous state and merge with current_state
+        config = {"configurable": {"thread_id": str(assessment.session_id)}}
+        logger.info(f"Processing answer for thread_id: {assessment.session_id}")
+        
+        try:
+            result = self.graph.invoke(current_state, config)
+            logger.info(f"Graph result: {result}")
+        except Exception as e:
+            logger.error(f"Error invoking graph: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
         
         # Update the last question-answer record with the answer and feedback
         from sqlalchemy import desc
@@ -154,13 +191,15 @@ class AssessmentService:
         
         if last_qa:
             last_qa.answer = answer
-            last_qa.feedback = result.get("feedback")
+            last_qa.feedback = result.get("feedback", "")
             last_qa.answered_at = datetime.utcnow()
             
             # Extract score from feedback if available
-            # This would need to be enhanced based on actual LangGraph output
-            if "mastery_level" in result.get("learning_outcomes", {}).get(assessment.current_outcome_key, {}):
-                last_qa.score = result["learning_outcomes"][assessment.current_outcome_key]["mastery_level"]
+            current_outcome_key = assessment.current_outcome_key
+            if current_outcome_key and current_outcome_key in result.get("learning_outcomes", {}):
+                last_qa.score = result["learning_outcomes"][current_outcome_key].get("mastery_level", 0.0)
+            
+            logger.info(f"Updated QA record: answer={answer[:50]}, feedback={last_qa.feedback[:50] if last_qa.feedback else 'None'}, score={last_qa.score}")
         
         # Update progress records
         for outcome_key, outcome_data in result.get("learning_outcomes", {}).items():
@@ -170,13 +209,26 @@ class AssessmentService:
                     (p for p in progress_records if p.learning_outcome_id == outcome.id),
                     None
                 )
-                if progress:
-                    progress.mastery_level = outcome_data.get("mastery_level", 0.0)
-                    progress.is_mastered = progress.mastery_level >= assessment.lesson.mastery_threshold
-                    progress.attempts += 1
-                    
-                    if progress.is_mastered and not progress.mastered_at:
-                        progress.mastered_at = datetime.utcnow()
+                if not progress:
+                    # Create progress record if it doesn't exist
+                    progress = OutcomeProgress(
+                        session_id=assessment.id,
+                        learning_outcome_id=outcome.id,
+                        mastery_level=0.0,
+                        is_mastered=False,
+                        attempts=0
+                    )
+                    self.db_session.add(progress)
+                    progress_records.append(progress)
+                
+                progress.mastery_level = outcome_data.get("mastery_level", 0.0)
+                progress.is_mastered = progress.mastery_level >= assessment.lesson.mastery_threshold
+                progress.attempts += 1
+                
+                if progress.is_mastered and not progress.mastered_at:
+                    progress.mastered_at = datetime.utcnow()
+                
+                logger.info(f"Updated progress for {outcome_key}: mastery={progress.mastery_level}, is_mastered={progress.is_mastered}")
         
         # Update assessment session
         assessment.current_outcome_key = result.get("current_outcome_key")
@@ -189,6 +241,8 @@ class AssessmentService:
             assessment.completed_at = datetime.utcnow()
         
         self.db_session.commit()
+        
+        logger.info(f"Returning feedback: {result.get('feedback', 'No feedback')[:100]}")
         
         # If there's a new question, create a new QA record
         if result.get("last_question") and result.get("current_outcome_key") != "all_mastered":

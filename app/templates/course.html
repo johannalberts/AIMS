@@ -4,32 +4,32 @@
 
 {% block content %}
 <div class="container">
-    <div class="breadcrumb">
-        <a href="/dashboard">Dashboard</a> / {{ course.title }}
+    <div class="breadcrumb text-gray-600 dark:text-gray-400">
+        <a href="/dashboard" class="text-indigo-600 dark:text-indigo-400 hover:underline">Dashboard</a> / <span class="text-gray-900 dark:text-gray-100">{{ course.title }}</span>
     </div>
     
-    <div class="course-detail">
-        <h1>{{ course.title }}</h1>
+    <div class="course-detail bg-white dark:bg-gray-800">
+        <h1 class="text-gray-900 dark:text-gray-100">{{ course.title }}</h1>
         <div class="course-meta">
-            <span class="badge">{{ course.subject }}</span>
+            <span class="badge bg-indigo-600 dark:bg-indigo-500 text-white">{{ course.subject }}</span>
             {% if course.difficulty_level %}
             <span class="badge badge-{{ course.difficulty_level }}">{{ course.difficulty_level }}</span>
             {% endif %}
         </div>
-        <p class="course-description">{{ course.description }}</p>
+        <p class="course-description text-gray-600 dark:text-gray-400">{{ course.description }}</p>
     </div>
     
     <section class="section">
-        <h2>📖 Lessons</h2>
+        <h2 class="text-gray-900 dark:text-gray-100">📖 Lessons</h2>
         <div class="lessons-list">
             {% for lesson in lessons %}
-            <div class="lesson-card">
-                <div class="lesson-number">{{ loop.index }}</div>
+            <div class="lesson-card bg-white dark:bg-gray-800">
+                <div class="lesson-number bg-indigo-600 dark:bg-indigo-500 text-white">{{ loop.index }}</div>
                 <div class="lesson-content">
-                    <h3>{{ lesson.title }}</h3>
-                    <p class="lesson-topic">Topic: {{ lesson.topic }}</p>
-                    <p class="lesson-description">{{ lesson.description }}</p>
-                    <div class="lesson-meta">
+                    <h3 class="text-gray-900 dark:text-gray-100">{{ lesson.title }}</h3>
+                    <p class="lesson-topic text-indigo-600 dark:text-indigo-400">Topic: {{ lesson.topic }}</p>
+                    <p class="lesson-description text-gray-600 dark:text-gray-400">{{ lesson.description }}</p>
+                    <div class="lesson-meta text-gray-600 dark:text-gray-400">
                         {% if lesson.estimated_duration_minutes %}
                         <span>⏱️ ~{{ lesson.estimated_duration_minutes }} minutes</span>
                         {% endif %}
@@ -37,7 +37,7 @@
                     </div>
                 </div>
                 <div class="lesson-actions">
-                    <a href="/lesson/{{ lesson.id }}/start" class="btn btn-primary">Start Assessment</a>
+                    <a href="/lesson/{{ lesson.id }}/start" class="btn btn-primary bg-indigo-600 dark:bg-indigo-500 hover:bg-indigo-700 dark:hover:bg-indigo-600 text-white">Start Assessment</a>
                 </div>
             </div>
             {% endfor %}

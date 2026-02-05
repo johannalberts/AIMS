@@ -470,7 +470,7 @@ Format each section clearly with the section headers above. Keep the content foc
 Generate a structured lesson plan with 3-6 learning outcomes. For each learning outcome, provide:
 1. A unique key (lowercase, underscore-separated identifier)
 2. A clear, specific description of what students will learn
-3. Key concepts students should understand
+3. Key concepts (as an array of specific topics/terms to be tested)
 4. Example use cases or applications
 
 Format your response as JSON with the following structure:
@@ -481,11 +481,16 @@ Format your response as JSON with the following structure:
     {{
       "key": "unique_identifier",
       "description": "Clear description of the learning outcome",
-      "key_concepts": "List of key concepts",
-      "examples": "Example applications or use cases"
+      "key_concepts": ["concept1", "concept2", "concept3"],
+      "examples": "Example applications or use cases (optional text)"
     }}
   ]
 }}
+
+Key concepts should be:
+- Specific terms, topics, or skills to test
+- 3-5 focused concepts per learning outcome
+- Used by the assessment system to generate questions
 
 Make sure the learning outcomes are:
 - Specific and measurable
@@ -547,7 +552,7 @@ Generate a complete course structure with 4-6 lessons. For each lesson, include:
 1. Lesson title and topic
 2. Brief description
 3. Estimated duration in minutes
-4. 3-5 learning outcomes with detailed information
+4. 3-5 learning outcomes with key concepts for assessment
 
 Format your response as JSON with the following structure:
 {{
@@ -563,13 +568,18 @@ Format your response as JSON with the following structure:
         {{
           "key": "unique_identifier",
           "description": "Clear description of the learning outcome",
-          "key_concepts": "List of key concepts",
-          "examples": "Example applications or use cases"
+          "key_concepts": ["concept1", "concept2", "concept3"],
+          "examples": "Example applications or use cases (optional text)"
         }}
       ]
     }}
   ]
 }}
+
+Key concepts should be:
+- Specific terms, topics, or skills to test in assessments
+- 3-5 focused concepts per learning outcome
+- No need for full teaching content - just assessment topics
 
 Ensure the course structure:
 - Follows a logical learning progression (beginner → advanced concepts)
