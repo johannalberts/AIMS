@@ -5,11 +5,13 @@ Adaptive Intelligent Mastery System
 import os
 import uuid
 import logging
+import tempfile
 from datetime import datetime
+from pathlib import Path
 from typing import Optional, Annotated
 
-from fastapi import FastAPI, HTTPException, Depends, Request, Response, Form
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import FastAPI, HTTPException, Depends, Request, Response, Form, UploadFile, File
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,6 +29,7 @@ from app.auth import (
 )
 from app.services.assessment import AssessmentService
 from app.services.content import ContentService
+from app.services.transcription import get_transcription_service
 
 # Configure logging
 logging.basicConfig(
@@ -64,6 +67,15 @@ async def on_startup():
     logger.info("🚀 Starting AIMS application...")
     create_db_and_tables()
     logger.info("✅ Database tables created/verified")
+    
+    # Initialize Whisper model
+    try:
+        logger.info("🎤 Initializing Whisper transcription service...")
+        get_transcription_service()
+        logger.info("✅ Whisper service ready")
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize Whisper service: {e}")
+        logger.warning("⚠️ Voice transcription will not be available")
 
 
 # ============================================================================
@@ -358,6 +370,74 @@ async def submit_answer(
         "next_question": result.get("next_question"),
         "current_outcome": result.get("current_outcome")
     })
+
+
+@app.post("/assess/transcribe")
+async def transcribe_audio(
+    audio: UploadFile = File(...),
+    current_user: User = Depends(require_user)
+):
+    """
+    Transcribe audio file to text using faster-whisper.
+    Returns JSON with transcript text.
+    """
+    temp_file = None
+    
+    try:
+        # Validate file
+        if not audio.content_type or not audio.content_type.startswith("audio/"):
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Invalid file type. Please upload an audio file."}
+            )
+        
+        # Check file size (max 10MB)
+        content = await audio.read()
+        if len(content) > 10 * 1024 * 1024:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "File too large. Maximum size is 10MB."}
+            )
+        
+        # Save to temporary file
+        suffix = Path(audio.filename).suffix if audio.filename else ".webm"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+            temp_file.write(content)
+            temp_path = temp_file.name
+        
+        logger.info(f"Transcribing audio from user {current_user.username}: {audio.filename}")
+        
+        # Transcribe
+        transcription_service = get_transcription_service()
+        result = transcription_service.transcribe_audio(temp_path)
+        
+        # Clean up temp file
+        os.unlink(temp_path)
+        
+        # Check for errors
+        if "error" in result:
+            return JSONResponse(
+                status_code=400,
+                content={"error": result["error"]}
+            )
+        
+        logger.info(f"✅ Transcription successful: {len(result['text'])} chars")
+        
+        return JSONResponse(content={
+            "transcript": result["text"],
+            "language": result["language"]
+        })
+        
+    except Exception as e:
+        # Clean up temp file if it exists
+        if temp_file and os.path.exists(temp_file.name):
+            os.unlink(temp_file.name)
+        
+        logger.error(f"❌ Transcription failed: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Transcription failed: {str(e)}"}
+        )
 
 
 # ============================================================================
