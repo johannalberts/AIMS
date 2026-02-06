@@ -253,6 +253,31 @@ Format each section clearly with the section headers above. Keep the content foc
         logger.info(f"Saved {len(saved_chunks)} content chunks for LO {learning_outcome_id}")
         return saved_chunks
     
+    def generate_and_save_content(
+        self,
+        learning_outcome_id: int,
+        user_id: Optional[int] = None,
+        approval_status: str = "approved"
+    ) -> Dict[str, Any]:
+        """Generate content for an outcome and immediately save it (for bulk operations)."""
+        # Generate content
+        result = self.generate_content_for_outcome(learning_outcome_id, user_id)
+        
+        # Save the chunks immediately
+        saved_chunks = self.save_generated_content(
+            learning_outcome_id=learning_outcome_id,
+            chunks=result["chunks"],
+            user_id=user_id,
+            approval_status=approval_status
+        )
+        
+        return {
+            "learning_outcome_id": learning_outcome_id,
+            "outcome_description": result["outcome_description"],
+            "chunks_saved": len(saved_chunks),
+            "status": "saved"
+        }
+    
     def get_content_for_outcome(
         self,
         learning_outcome_id: int,
@@ -426,3 +451,174 @@ Format each section clearly with the section headers above. Keep the content foc
             logger.error(f"Error processing PDF: {e}")
             raise ValueError(f"Failed to process PDF: {str(e)}")
 
+    def suggest_lesson_structure(
+        self,
+        lesson_title: str,
+        lesson_topic: str,
+        lesson_description: str = "",
+        course_context: str = ""
+    ) -> Dict[str, Any]:
+        """Generate AI-suggested lesson structure with learning outcomes."""
+        try:
+            prompt = f"""You are an expert curriculum designer. Create a comprehensive lesson structure with learning outcomes.
+
+**Lesson Title:** {lesson_title}
+**Topic:** {lesson_topic}
+**Description:** {lesson_description if lesson_description else "Not provided"}
+**Course Context:** {course_context if course_context else "General education"}
+
+Generate a structured lesson plan with 3-6 learning outcomes. For each learning outcome, provide:
+1. A unique key (lowercase, underscore-separated identifier)
+2. A clear, specific description of what students will learn
+3. Key concepts (as an array of specific topics/terms to be tested)
+4. Example use cases or applications
+
+Format your response as JSON with the following structure:
+{{
+  "lesson_overview": "Brief overview of what this lesson covers",
+  "estimated_duration_minutes": <number>,
+  "learning_outcomes": [
+    {{
+      "key": "unique_identifier",
+      "description": "Clear description of the learning outcome",
+      "key_concepts": ["concept1", "concept2", "concept3"],
+      "examples": "Example applications or use cases (optional text)"
+    }}
+  ]
+}}
+
+Key concepts should be:
+- Specific terms, topics, or skills to test
+- 3-5 focused concepts per learning outcome
+- Used by the assessment system to generate questions
+
+Make sure the learning outcomes are:
+- Specific and measurable
+- Progressive in difficulty
+- Aligned with the lesson topic
+- Practical and applicable"""
+
+            logger.info(f"Generating lesson structure for: {lesson_title}")
+            
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are an expert curriculum designer specializing in creating effective learning structures. Always respond with valid JSON."
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                temperature=0.7,
+                max_tokens=2000,
+                response_format={"type": "json_object"}
+            )
+            
+            # Parse the JSON response
+            import json
+            suggestion = json.loads(response.choices[0].message.content)
+            
+            return {
+                "lesson_title": lesson_title,
+                "lesson_topic": lesson_topic,
+                "suggestion": suggestion,
+                "status": "generated"
+            }
+            
+        except Exception as e:
+            logger.error(f"Error generating lesson structure: {e}")
+            raise ValueError(f"Failed to generate lesson structure: {str(e)}")
+    
+    def suggest_course_structure(
+        self,
+        course_title: str,
+        subject: str,
+        description: str,
+        difficulty_level: str = "intermediate"
+    ) -> Dict[str, Any]:
+        """Generate AI-suggested complete course structure with lessons and learning outcomes."""
+        try:
+            prompt = f"""You are an expert curriculum designer. Create a comprehensive course structure with lessons and learning outcomes.
+
+**Course Title:** {course_title}
+**Subject:** {subject}
+**Description:** {description}
+**Difficulty Level:** {difficulty_level}
+
+Generate a complete course structure with 4-6 lessons. For each lesson, include:
+1. Lesson title and topic
+2. Brief description
+3. Estimated duration in minutes
+4. 3-5 learning outcomes with key concepts for assessment
+
+Format your response as JSON with the following structure:
+{{
+  "course_overview": "Brief overview of the entire course",
+  "total_estimated_hours": <number>,
+  "lessons": [
+    {{
+      "title": "Lesson title",
+      "topic": "Main topic covered",
+      "description": "What this lesson covers",
+      "estimated_duration_minutes": <number>,
+      "learning_outcomes": [
+        {{
+          "key": "unique_identifier",
+          "description": "Clear description of the learning outcome",
+          "key_concepts": ["concept1", "concept2", "concept3"],
+          "examples": "Example applications or use cases (optional text)"
+        }}
+      ]
+    }}
+  ]
+}}
+
+Key concepts should be:
+- Specific terms, topics, or skills to test in assessments
+- 3-5 focused concepts per learning outcome
+- No need for full teaching content - just assessment topics
+
+Ensure the course structure:
+- Follows a logical learning progression (beginner → advanced concepts)
+- Is appropriate for {difficulty_level} level learners
+- Has coherent flow between lessons
+- Includes practical, measurable learning outcomes
+- Covers all aspects mentioned in the course description"""
+
+            logger.info(f"Generating course structure for: {course_title}")
+            
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are an expert curriculum designer specializing in creating comprehensive course structures. Always respond with valid JSON."
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                temperature=0.7,
+                max_tokens=3000,
+                response_format={"type": "json_object"}
+            )
+            
+            # Parse the JSON response
+            import json
+            suggestion = json.loads(response.choices[0].message.content)
+            
+            return {
+                "course_title": course_title,
+                "subject": subject,
+                "difficulty_level": difficulty_level,
+                "suggestion": suggestion,
+                "status": "generated"
+            }
+            
+        except Exception as e:
+            logger.error(f"Error generating course structure: {e}")
+            raise ValueError(f"Failed to generate course structure: {str(e)}")
