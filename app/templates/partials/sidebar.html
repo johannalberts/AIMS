@@ -1,0 +1,40 @@
+<h3>Learning Outcomes</h3>
+<div class="outcomes-progress" id="outcomes-progress">
+    {% for outcome in learning_outcomes %}
+    <div class="outcome-item {% if progress %}{% for p in progress %}{% if p.learning_outcome_id == outcome.id %}{% if p.is_mastered %}mastered{% endif %}{% endif %}{% endfor %}{% endif %}" data-outcome-id="{{ outcome.id }}">
+        <div class="outcome-header">
+            <span class="outcome-number">{{ loop.index }}</span>
+            <span class="outcome-key">{{ outcome.key }}</span>
+        </div>
+        <p class="outcome-description">{{ outcome.description }}</p>
+        
+        <!-- Concept Progress -->
+        {% if concept_tracking and outcome.id in concept_tracking %}
+        {% set tracking = concept_tracking[outcome.id] %}
+        {% if tracking.all %}
+        <ul class="concept-list">
+            {% for concept in tracking.all %}
+            <li class="{% if concept in tracking.covered %}concept-covered{% else %}concept-pending{% endif %}">
+                <span class="concept-icon">{% if concept in tracking.covered %}✅{% else %}⏳{% endif %}</span>
+                <span>{{ concept }}</span>
+            </li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+        {% endif %}
+        
+        <div class="outcome-progress-bar">
+            {% set mastery = 0 %}
+            {% if progress %}
+                {% for p in progress %}
+                    {% if p.learning_outcome_id == outcome.id %}
+                        {% set mastery = (p.mastery_level * 100) | int %}
+                    {% endif %}
+                {% endfor %}
+            {% endif %}
+            <div class="progress-fill" style="width: {{ mastery }}%"></div>
+        </div>
+        <span class="outcome-mastery">{{ mastery }}% Mastery</span>
+    </div>
+    {% endfor %}
+</div>

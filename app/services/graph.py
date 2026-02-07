@@ -206,19 +206,16 @@ class AIMSGraph:
         ])
 
     def _build_graph(self):
-        """Builds the nodes and edges of the LangGraph."""
-        # Define the nodes (functions that modify the state)
+        """Builds the nodes and edges of the LangGraph with simplified workflow."""
+        # Define the nodes (only essential ones)
         self.workflow.add_node("choose_outcome", self.choose_outcome)
         self.workflow.add_node("generate_question", self.generate_question)
         self.workflow.add_node("assess_answer", self.assess_answer)
-        self.workflow.add_node("rephrase_question", self.rephrase_question)
-        self.workflow.add_node("re_teach_concept", self.re_teach_concept)
-        self.workflow.add_node("provide_feedback", self.provide_feedback)
 
-        # Set the entry point with conditional routing
+        # Set the entry point
         self.workflow.set_entry_point("choose_outcome")
 
-        # Route from choose_outcome: if there's a last_response, go to assess_answer first
+        # Route from choose_outcome: if there's a last_response, assess it first
         self.workflow.add_conditional_edges(
             "choose_outcome",
             self._route_from_choose_outcome,
@@ -228,21 +225,18 @@ class AIMSGraph:
             }
         )
 
-        # Define conditional edges after assessment
+        # After assessment, check if we're done or need another question
         self.workflow.add_conditional_edges(
             "assess_answer",
             self._route_after_assessment,
             {
-                "mastery_achieved": "provide_feedback",
-                "rephrase_needed": "provide_feedback",
-                "reteach_needed": "re_teach_concept",
+                "done": END,
+                "continue": "choose_outcome"
             }
         )
 
-        # Connect other nodes
-        # After providing feedback, generate a new question
-        self.workflow.add_edge("provide_feedback", "generate_question")
-        self.workflow.add_edge("re_teach_concept", "generate_question")
+        # After generating question, stop and wait for user input
+        self.workflow.add_edge("generate_question", END)
 
         # Compile the graph WITH checkpointer for state persistence
         if self.checkpointer:
@@ -261,16 +255,12 @@ class AIMSGraph:
         return "generate_question"
         
 
-    def _route_after_assessment(self, state: LessonState) -> Literal["mastery_achieved", "rephrase_needed", "reteach_needed"]:
-        """Conditional router based on assessment results."""
-        current_outcome_info = state["learning_outcomes"][state["current_outcome_key"]]
-
-        if current_outcome_info["mastery_level"] >= 0.8:
-            return "mastery_achieved"
-        elif state["failed_attempts"] < 3:  # Give multiple attempts before re-teaching
-            return "rephrase_needed"  # Will go to provide_feedback then generate_question
-        else:
-            return "reteach_needed"
+    def _route_after_assessment(self, state: LessonState) -> Literal["done", "continue"]:
+        """Route after assessment - continue or end."""
+        # Check if all outcomes are mastered
+        if state.get("current_outcome_key") == "all_mastered":
+            return "done"
+        return "continue"
 
     def choose_outcome(self, state: LessonState) -> LessonState:
         """Node: Selects the next learning outcome to assess."""
@@ -296,73 +286,91 @@ class AIMSGraph:
         }
 
     def generate_question(self, state: LessonState) -> LessonState:
-        """Node: Generates a question based on the current learning outcome."""
+        """Node: Generates next question, combining with feedback if following an answer."""
         print(f"[GRAPH] generate_question called for outcome: {state.get('current_outcome_key')}")
         
         if state["current_outcome_key"] == "all_mastered":
             return {
                 **state,
-                "last_question": "Congratulations! You have mastered all learning outcomes.",
-                "feedback": "All objectives completed successfully!"
+                "last_question": "",
+                "feedback": "🎉 Congratulations! You have mastered all learning outcomes!"
             }
             
         outcome_to_test = state["current_outcome_key"]
         outcome_data = state["learning_outcomes"][outcome_to_test]
         mastery_level = outcome_data.get("mastery_level", 0.0)
         
-        # Get key concepts (may be None, string, or list)
+        # Get key concepts
         key_concepts = outcome_data.get("key_concepts", "")
         if isinstance(key_concepts, list):
-            key_concepts = ", ".join(key_concepts)
-        elif not key_concepts:
-            key_concepts = "General understanding of the learning outcome"
+            key_concepts_list = key_concepts
+            key_concepts_str = ", ".join(key_concepts)
+        elif isinstance(key_concepts, str) and key_concepts:
+            key_concepts_list = [k.strip() for k in key_concepts.split(',') if k.strip()]
+            key_concepts_str = key_concepts
+        else:
+            key_concepts_list = []
+            key_concepts_str = "General understanding of the learning outcome"
         
-        # Check if this is a follow-up after partial understanding
-        # Use follow-up when student showed SOME understanding (0.2-0.8) but didn't master it
-        is_followup = (
-            state.get("last_response") and 
-            0.2 <= mastery_level < 0.8
-        )
+        # Get concepts already covered
+        concepts_covered = state.get("concepts_covered", {}).get(outcome_to_test, [])
+        concepts_remaining = [c for c in key_concepts_list if c not in concepts_covered]
+        
+        # Determine if this follows an assessment
+        # Check if there's feedback from a recent assessment
+        has_previous_answer = state.get("feedback") and mastery_level > 0
         
         try:
-            if is_followup:
-                # Get concepts covered for this outcome
-                concepts_covered = state.get("concepts_covered", {}).get(outcome_to_test, [])
-                concepts_covered_str = ", ".join(concepts_covered) if concepts_covered else "None yet"
+            if has_previous_answer and mastery_level < 0.8 and concepts_remaining:
+                # Create combined acknowledgment + next question
+                print(f"[GRAPH] Generating combined feedback+question (mastery={mastery_level}, concepts_covered={len(concepts_covered)}/{len(key_concepts_list)})")
                 
-                # Generate a targeted follow-up question
-                print(f"[GRAPH] Generating follow-up question (mastery={mastery_level}, concepts_covered={concepts_covered})")
-                response = self.llm.invoke(
-                    self.followup_prompt.format_messages(
-                        outcome=outcome_data.get("description", outcome_to_test),
-                        key_concepts=key_concepts,
-                        concepts_covered=concepts_covered_str,
-                        previous_question=state.get("last_question", ""),
-                        student_response=state.get("last_response", ""),
-                        feedback=state.get("feedback", "")
-                    )
-                )
-                question = response.content
+                prompt = f"""You are an encouraging tutor. The student just answered a question about {outcome_data.get("description", outcome_to_test)}.
+
+Assessment Result: {state.get("feedback", "")}
+Mastery Level: {int(mastery_level * 100)}%
+
+Key Concepts for this Learning Outcome:
+- All: {key_concepts_str}
+- Already Covered: {', '.join(concepts_covered) if concepts_covered else 'None yet'}
+- Still Needed: {', '.join(concepts_remaining)}
+
+Create a SINGLE, BRIEF response (2-3 sentences max) that:
+1. Briefly acknowledges what they understood (based on the assessment)
+2. Asks about the NEXT uncovered concept from the "Still Needed" list
+
+Be conversational and encouraging. Focus on moving forward to the next concept."""
+
+                response = self.llm.invoke([("human", prompt)])
+                combined_message = response.content
+                
+            elif mastery_level >= 0.8:
+                # Mastery achieved - just feedback, no next question for this outcome
+                combined_message = f"✅ Excellent work! You've mastered {outcome_data.get('description', outcome_to_test)}!"
+                
             else:
-                # Generate initial or fresh question
+                # Fresh question for new outcome or first question
                 print(f"[GRAPH] Generating fresh question")
                 response = self.llm.invoke(
                     self.question_prompt.format_messages(
                         topic=state["topic"],
                         outcome=outcome_data.get("description", outcome_to_test),
-                        key_concepts=key_concepts,
+                        key_concepts=key_concepts_str,
                         failed_attempts=state["failed_attempts"]
                     )
                 )
-                question = response.content
+                combined_message = response.content
+                
         except Exception as e:
             print(f"Error generating question: {e}")
-            question = f"Please explain your understanding of '{outcome_to_test}' and provide examples."
+            combined_message = f"Please explain your understanding of '{outcome_to_test}' and provide examples."
         
-        print(f"[GRAPH] Generated question: {question}")
+        print(f"[GRAPH] Generated message: {combined_message[:100]}...")
         return {
             **state,
-            "last_question": question
+            "last_question": combined_message,
+            "feedback": "",  # Clear feedback after using it to prevent reuse
+            "last_response": ""  # Clear last_response after using it in combined message
         }
 
     def assess_answer(self, state: LessonState) -> LessonState:
@@ -453,7 +461,8 @@ class AIMSGraph:
                 "learning_outcomes": updated_learning_outcomes,
                 "failed_attempts": state["failed_attempts"] + 1,
                 "feedback": feedback,
-                "concepts_covered": all_concepts_covered
+                "concepts_covered": all_concepts_covered,
+                "last_response": ""  # Clear to prevent re-assessment
             }
         
         return {
@@ -461,79 +470,8 @@ class AIMSGraph:
             "learning_outcomes": updated_learning_outcomes,
             "failed_attempts": 0,
             "feedback": feedback,
-            "concepts_covered": all_concepts_covered
-        }
-
-    def rephrase_question(self, state: LessonState) -> LessonState:
-        """Node: Rephrases the question with a hint."""
-        outcome_key = state["current_outcome_key"]
-        outcome_data = state["learning_outcomes"][outcome_key]
-        
-        try:
-            response = self.llm.invoke(
-                self.rephrase_prompt.format_messages(
-                    original_question=state["last_question"],
-                    outcome=outcome_data.get("description", outcome_key),
-                    previous_response=state["last_response"],
-                    failed_attempts=state["failed_attempts"]
-                )
-            )
-            hinted_question = response.content
-        except Exception as e:
-            print(f"Error rephrasing question: {e}")
-            hinted_question = f"Let me rephrase: {state['last_question']} (Hint: Think about the core concepts and try to explain in your own words.)"
-        
-        print(f"Rephrased question: {hinted_question}")
-        return {
-            **state,
-            "last_question": hinted_question
-        }
-
-    def re_teach_concept(self, state: LessonState) -> LessonState:
-        """Node: Provides a full explanation of the concept."""
-        outcome_key = state["current_outcome_key"]
-        outcome_data = state["learning_outcomes"][outcome_key]
-        
-        try:
-            response = self.llm.invoke(
-                self.reteach_prompt.format_messages(
-                    outcome=outcome_data.get("description", outcome_key),
-                    topic=state["topic"],
-                    previous_responses=state["last_response"]
-                )
-            )
-            lesson_text = response.content
-        except Exception as e:
-            print(f"Error generating lesson: {e}")
-            lesson_text = f"Let me explain '{outcome_key}' in more detail. This concept is important because..."
-        
-        print(f"Providing a re-teaching lesson: {lesson_text}")
-        return {
-            **state,
-            "feedback": lesson_text,
-            "failed_attempts": 0  # Reset after re-teaching
-        }
-
-    def provide_feedback(self, state: LessonState) -> LessonState:
-        """Node: Provides feedback based on assessment score."""
-        outcome_key = state["current_outcome_key"]
-        outcome_data = state["learning_outcomes"][outcome_key]
-        mastery_level = outcome_data.get("mastery_level", 0.0)
-        
-        # Keep the existing assessment feedback from assess_answer
-        existing_feedback = state.get("feedback", "")
-        
-        # Add encouragement based on mastery level
-        if mastery_level >= 0.8:
-            additional_feedback = f" Great job! You've mastered '{outcome_key}'."
-            print(f"Mastery achieved for {outcome_key}! Level: {mastery_level}")
-        else:
-            additional_feedback = " Let's try another question to strengthen your understanding."
-            print(f"Mastery not yet achieved for {outcome_key}. Level: {mastery_level}")
-        
-        return {
-            **state,
-            "feedback": existing_feedback + additional_feedback
+            "concepts_covered": all_concepts_covered,
+            "last_response": ""  # Clear to prevent re-assessment
         }
 
     def invoke(self, state, config=None):

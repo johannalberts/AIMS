@@ -10,47 +10,8 @@
     
     <div class="assessment-container">
         <!-- Left Sidebar: Progress -->
-        <aside class="assessment-sidebar">
-            <h3>Learning Outcomes</h3>
-            <div class="outcomes-progress" id="outcomes-progress">
-                {% for outcome in learning_outcomes %}
-                <div class="outcome-item {% if progress %}{% for p in progress %}{% if p.learning_outcome_id == outcome.id %}{% if p.is_mastered %}mastered{% endif %}{% endif %}{% endfor %}{% endif %}" data-outcome-id="{{ outcome.id }}">
-                    <div class="outcome-header">
-                        <span class="outcome-number">{{ loop.index }}</span>
-                        <span class="outcome-key">{{ outcome.key }}</span>
-                    </div>
-                    <p class="outcome-description">{{ outcome.description }}</p>
-                    
-                    <!-- Concept Progress -->
-                    {% if concept_tracking and outcome.id in concept_tracking %}
-                    {% set tracking = concept_tracking[outcome.id] %}
-                    {% if tracking.all %}
-                    <ul class="concept-list">
-                        {% for concept in tracking.all %}
-                        <li class="{% if concept in tracking.covered %}concept-covered{% else %}concept-pending{% endif %}">
-                            <span class="concept-icon">{% if concept in tracking.covered %}✅{% else %}⏳{% endif %}</span>
-                            <span>{{ concept }}</span>
-                        </li>
-                        {% endfor %}
-                    </ul>
-                    {% endif %}
-                    {% endif %}
-                    
-                    <div class="outcome-progress-bar">
-                        {% set mastery = 0 %}
-                        {% if progress %}
-                            {% for p in progress %}
-                                {% if p.learning_outcome_id == outcome.id %}
-                                    {% set mastery = (p.mastery_level * 100) | int %}
-                                {% endif %}
-                            {% endfor %}
-                        {% endif %}
-                        <div class="progress-fill" style="width: {{ mastery }}%"></div>
-                    </div>
-                    <span class="outcome-mastery">{{ mastery }}% Mastery</span>
-                </div>
-                {% endfor %}
-            </div>
+        <aside class="assessment-sidebar" id="assessment-sidebar">
+            {% include "partials/sidebar.html" %}
         </aside>
         
         <!-- Main Chat Interface -->
@@ -78,7 +39,7 @@
                             <div class="message-content">
                                 <div class="message-header">
                                     <strong>AIMS</strong>
-                                    <span class="message-time">{{ msg.asked_at.strftime('%H:%M') }}</span>
+                                    <span class="message-time">{{ msg.asked_at.strftime('%H:%M') if msg.asked_at else 'Now' }}</span>
                                 </div>
                                 <div class="message-text">{{ msg.question }}</div>
                                 {% if msg.event_type == "rephrase" %}
@@ -104,56 +65,14 @@
                         
                         <!-- AI Feedback -->
                         {% if msg.feedback %}
-                        <div class="message ai feedback">
-                            <div class="message-avatar">✨</div>
+                        <div class="message ai">
+                            <div class="message-avatar">🤖</div>
                             <div class="message-content">
-                                <!-- Concept Progress (if available) -->
-                                {% if msg.concept_info %}
-                                <div class="concept-progress" style="margin-bottom: 12px; padding: 10px; background: var(--bg-secondary); border-radius: 8px; border-left: 3px solid var(--primary);">
-                                    <div style="font-size: 0.9em; font-weight: 600; margin-bottom: 8px; color: var(--text-primary);">
-                                        Progress: {{ msg.concept_info.addressed_count }}/{{ msg.concept_info.total_count }} concepts
-                                    </div>
-                                    
-                                    {% if msg.concept_info.addressed_concepts %}
-                                    <div style="margin-bottom: 8px;">
-                                        <div style="font-size: 0.85em; color: var(--success); margin-bottom: 4px;">✅ Covered:</div>
-                                        <ul style="margin: 0; padding-left: 20px; font-size: 0.85em; color: var(--text-secondary);">
-                                            {% for concept in msg.concept_info.addressed_concepts %}
-                                            <li style="color: var(--success);">{{ concept }}</li>
-                                            {% endfor %}
-                                        </ul>
-                                    </div>
-                                    {% endif %}
-                                    
-                                    {% if msg.concept_info.remaining_concepts %}
-                                    <div>
-                                        <div style="font-size: 0.85em; color: var(--warning); margin-bottom: 4px;">⏳ Still needed:</div>
-                                        <ul style="margin: 0; padding-left: 20px; font-size: 0.85em;">
-                                            {% for concept in msg.concept_info.remaining_concepts %}
-                                            <li style="color: var(--text-secondary);">{{ concept }}</li>
-                                            {% endfor %}
-                                        </ul>
-                                    </div>
-                                    {% endif %}
+                                <div class="message-header">
+                                    <strong>AIMS</strong>
+                                    <span class="message-time">{{ msg.answered_at.strftime('%H:%M') }}</span>
                                 </div>
-                                {% endif %}
-                                
                                 <div class="message-text">{{ msg.feedback }}</div>
-                                {% if msg.score is not none %}
-                                <div class="score-indicator {% if msg.score >= 0.8 %}mastered{% elif msg.score >= 0.5 %}partial{% else %}needs-work{% endif %}">
-                                    Score: {{ (msg.score * 100) | int }}%
-                                    {% if msg.concept_info %}
-                                    ({{ msg.concept_info.addressed_count }}/{{ msg.concept_info.total_count }} concepts)
-                                    {% endif %}
-                                    {% if msg.score >= 0.8 %}
-                                    <span class="score-badge">✅ Mastered!</span>
-                                    {% elif msg.score >= 0.5 %}
-                                    <span class="score-badge">🔄 Partial Understanding</span>
-                                    {% else %}
-                                    <span class="score-badge">📚 Keep Going!</span>
-                                    {% endif %}
-                                </div>
-                                {% endif %}
                             </div>
                         </div>
                         {% endif %}
@@ -172,7 +91,9 @@
                     hx-post="/assess/{{ session.session_id }}/answer"
                     hx-target="#newMessages"
                     hx-swap="beforeend"
-                    hx-on::after-request="if(event.detail.successful) { this.reset(); clearTranscript(); scrollToBottom(); }"
+                    hx-on::before-request="event.target.querySelector('button[type=submit]').disabled = true"
+                    hx-on::after-request="event.target.querySelector('button[type=submit]').disabled = false; if(event.detail.successful) { event.target.reset(); htmx.ajax('POST', '/assess/{{ session.session_id }}/sidebar', {target: '#assessment-sidebar', swap: 'innerHTML'}); }"
+                    @htmx:after-request="if($event.detail.successful) { clearTranscript(); scrollToBottom(); }"
                     class="chat-input-form"
                     x-ref="answerForm"
                 >

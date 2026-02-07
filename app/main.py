@@ -323,81 +323,47 @@ async def assessment_interface(
         .order_by(QuestionAnswer.asked_at)
     ).all()
     
-    # Enrich messages with concept tracking info for feedback messages
-    enriched_messages = []
-    for msg in messages:
-        msg_dict = {
-            "id": msg.id,
-            "question": msg.question,
-            "answer": msg.answer,
-            "feedback": msg.feedback,
-            "score": msg.score,
-            "asked_at": msg.asked_at,
-            "answered_at": msg.answered_at,
-            "event_type": msg.event_type,
-            "concept_info": None
-        }
-        
-        # If this message has feedback/score, add concept info
-        if msg.feedback and msg.score is not None and msg.learning_outcome_id:
-            outcome = next((o for o in learning_outcomes if o.id == msg.learning_outcome_id), None)
-            if outcome and outcome.id in concept_tracking:
-                tracking = concept_tracking[outcome.id]
-                # Reconstruct what was covered at this point based on score
-                # This is approximate but better than nothing
-                if tracking["all"]:
-                    addressed_count = max(1, int(len(tracking["all"]) * msg.score))
-                    msg_dict["concept_info"] = {
-                        "outcome_description": outcome.description,
-                        "all_concepts": tracking["all"],
-                        "addressed_concepts": tracking["covered"][:addressed_count] if tracking["covered"] else [],
-                        "remaining_concepts": tracking["all"][addressed_count:] if len(tracking["all"]) > addressed_count else [],
-                        "total_count": len(tracking["all"]),
-                        "addressed_count": addressed_count
-                    }
-        
-        enriched_messages.append(msg_dict)
-    
     # Get progress
     progress = db_session.exec(
         select(OutcomeProgress)
         .where(OutcomeProgress.session_id == assessment.id)
     ).all()
     
-    # Build concept tracking for each outcome
+    # Build concept tracking for each outcome FIRST (before enriching messages)
     # Try to get from LangGraph state if available
     from langgraph.checkpoint.postgres import PostgresSaver
-    from app.database import engine
     import json
+    import os
     
     concept_tracking = {}
     try:
-        checkpointer = PostgresSaver.from_conn_string(str(engine.url))
-        config = {"configurable": {"thread_id": str(assessment.session_id)}}
-        checkpoint = checkpointer.get(config)
-        
-        if checkpoint and checkpoint.get("channel_values"):
-            state = checkpoint["channel_values"]
-            concepts_covered_state = state.get("concepts_covered", {})
+        db_url = os.getenv("DATABASE_URL", "postgresql://aims_user:aims_password@postgres:5432/aims_db")
+        with PostgresSaver.from_conn_string(db_url) as checkpointer:
+            config = {"configurable": {"thread_id": str(assessment.session_id)}}
+            checkpoint = checkpointer.get(config)
             
-            # Build tracking for each outcome
-            for outcome in learning_outcomes:
-                # Parse key concepts
-                key_concepts = outcome.key_concepts
-                if key_concepts and isinstance(key_concepts, str):
-                    try:
-                        key_concepts = json.loads(key_concepts)
-                    except:
-                        key_concepts = [k.strip() for k in key_concepts.split(',') if k.strip()]
-                elif not key_concepts:
-                    key_concepts = []
+            if checkpoint and checkpoint.get("channel_values"):
+                state = checkpoint["channel_values"]
+                concepts_covered_state = state.get("concepts_covered", {})
                 
-                covered = concepts_covered_state.get(outcome.key, [])
-                concept_tracking[outcome.id] = {
-                    "all": key_concepts,
-                    "covered": covered,
-                    "remaining": [c for c in key_concepts if c not in covered]
-                }
+                # Build tracking for each outcome
+                for outcome in learning_outcomes:
+                    # Parse key concepts
+                    key_concepts = outcome.key_concepts
+                    if key_concepts and isinstance(key_concepts, str):
+                        try:
+                            key_concepts = json.loads(key_concepts)
+                        except:
+                            key_concepts = [k.strip() for k in key_concepts.split(',') if k.strip()]
+                    elif not key_concepts:
+                        key_concepts = []
+                    
+                    covered = concepts_covered_state.get(outcome.key, [])
+                    concept_tracking[outcome.id] = {
+                        "all": key_concepts,
+                        "covered": covered,
+                        "remaining": [c for c in key_concepts if c not in covered]
+                    }
     except Exception as e:
         # If checkpoint retrieval fails, build from outcome data
         import logging
@@ -417,6 +383,21 @@ async def assessment_interface(
                 "covered": [],
                 "remaining": key_concepts
             }
+    
+    # Now enrich messages (simplified - no concept_info in chat)
+    enriched_messages = []
+    for msg in messages:
+        msg_dict = {
+            "id": msg.id,
+            "question": msg.question,
+            "answer": msg.answer,
+            "feedback": msg.feedback,
+            "score": msg.score,
+            "asked_at": msg.asked_at,
+            "answered_at": msg.answered_at,
+            "event_type": msg.event_type
+        }
+        enriched_messages.append(msg_dict)
     
     return templates.TemplateResponse("assessment.html", {
         "request": request,
@@ -459,8 +440,99 @@ async def submit_answer(
         "score": result.get("score"),
         "status": result["status"],
         "next_question": result.get("next_question"),
-        "current_outcome": result.get("current_outcome"),
-        "concept_info": result.get("concept_info")
+        "current_outcome": result.get("current_outcome")
+    })
+
+
+@app.post("/assess/{session_id}/sidebar")
+async def update_sidebar(
+    session_id: str,
+    current_user: User = Depends(require_user),
+    db_session: Session = Depends(get_session)
+):
+    """Return updated sidebar HTML fragment via HTMX."""
+    # Get assessment session
+    statement = select(AssessmentSession).where(
+        AssessmentSession.session_id == session_id
+    )
+    assessment = db_session.exec(statement).first()
+    
+    if not assessment or assessment.user_id != current_user.id:
+        raise HTTPException(status_code=404)
+    
+    # Get lesson and learning outcomes
+    lesson = db_session.get(Lesson, assessment.lesson_id)
+    learning_outcomes = db_session.exec(
+        select(LearningOutcome)
+        .where(LearningOutcome.lesson_id == lesson.id)
+        .order_by(LearningOutcome.order)
+    ).all()
+    
+    # Get progress
+    progress = db_session.exec(
+        select(OutcomeProgress)
+        .where(OutcomeProgress.session_id == assessment.id)
+    ).all()
+    
+    # Build concept tracking from LangGraph state
+    from langgraph.checkpoint.postgres import PostgresSaver
+    import json
+    import os
+    
+    concept_tracking = {}
+    try:
+        db_url = os.getenv("DATABASE_URL", "postgresql://aims_user:aims_password@postgres:5432/aims_db")
+        with PostgresSaver.from_conn_string(db_url) as checkpointer:
+            config = {"configurable": {"thread_id": str(assessment.session_id)}}
+            checkpoint = checkpointer.get(config)
+            
+            if checkpoint and checkpoint.get("channel_values"):
+                state = checkpoint["channel_values"]
+                concepts_covered_state = state.get("concepts_covered", {})
+                
+                # Build tracking for each outcome
+                for outcome in learning_outcomes:
+                    # Parse key concepts
+                    key_concepts = outcome.key_concepts
+                    if key_concepts and isinstance(key_concepts, str):
+                        try:
+                            key_concepts = json.loads(key_concepts)
+                        except:
+                            key_concepts = [k.strip() for k in key_concepts.split(',') if k.strip()]
+                    elif not key_concepts:
+                        key_concepts = []
+                    
+                    covered = concepts_covered_state.get(outcome.key, [])
+                    concept_tracking[outcome.id] = {
+                        "all": key_concepts,
+                        "covered": covered,
+                        "remaining": [c for c in key_concepts if c not in covered]
+                    }
+    except Exception as e:
+        import logging
+        logging.warning(f"Could not retrieve checkpoint for sidebar: {e}")
+        for outcome in learning_outcomes:
+            key_concepts = outcome.key_concepts
+            if key_concepts and isinstance(key_concepts, str):
+                try:
+                    key_concepts = json.loads(key_concepts)
+                except:
+                    key_concepts = [k.strip() for k in key_concepts.split(',') if k.strip()]
+            elif not key_concepts:
+                key_concepts = []
+            
+            concept_tracking[outcome.id] = {
+                "all": key_concepts,
+                "covered": [],
+                "remaining": key_concepts
+            }
+    
+    # Return sidebar partial
+    return templates.TemplateResponse("partials/sidebar.html", {
+        "request": {},
+        "learning_outcomes": learning_outcomes,
+        "progress": progress,
+        "concept_tracking": concept_tracking
     })
 
 
