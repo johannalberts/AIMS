@@ -10,31 +10,8 @@
     
     <div class="assessment-container">
         <!-- Left Sidebar: Progress -->
-        <aside class="assessment-sidebar">
-            <h3>Learning Outcomes</h3>
-            <div class="outcomes-progress" id="outcomes-progress">
-                {% for outcome in learning_outcomes %}
-                <div class="outcome-item {% if progress %}{% for p in progress %}{% if p.learning_outcome_id == outcome.id %}{% if p.is_mastered %}mastered{% endif %}{% endif %}{% endfor %}{% endif %}" data-outcome-id="{{ outcome.id }}">
-                    <div class="outcome-header">
-                        <span class="outcome-number">{{ loop.index }}</span>
-                        <span class="outcome-key">{{ outcome.key }}</span>
-                    </div>
-                    <p class="outcome-description">{{ outcome.description }}</p>
-                    <div class="outcome-progress-bar">
-                        {% set mastery = 0 %}
-                        {% if progress %}
-                            {% for p in progress %}
-                                {% if p.learning_outcome_id == outcome.id %}
-                                    {% set mastery = (p.mastery_level * 100) | int %}
-                                {% endif %}
-                            {% endfor %}
-                        {% endif %}
-                        <div class="progress-fill" style="width: {{ mastery }}%"></div>
-                    </div>
-                    <span class="outcome-mastery">{{ mastery }}% Mastery</span>
-                </div>
-                {% endfor %}
-            </div>
+        <aside class="assessment-sidebar" id="assessment-sidebar">
+            {% include "partials/sidebar.html" %}
         </aside>
         
         <!-- Main Chat Interface -->
@@ -62,7 +39,7 @@
                             <div class="message-content">
                                 <div class="message-header">
                                     <strong>AIMS</strong>
-                                    <span class="message-time">{{ msg.asked_at.strftime('%H:%M') }}</span>
+                                    <span class="message-time">{{ msg.asked_at.strftime('%H:%M') if msg.asked_at else 'Now' }}</span>
                                 </div>
                                 <div class="message-text">{{ msg.question }}</div>
                                 {% if msg.event_type == "rephrase" %}
@@ -88,15 +65,14 @@
                         
                         <!-- AI Feedback -->
                         {% if msg.feedback %}
-                        <div class="message ai feedback">
-                            <div class="message-avatar">✨</div>
+                        <div class="message ai">
+                            <div class="message-avatar">🤖</div>
                             <div class="message-content">
-                                <div class="message-text">{{ msg.feedback }}</div>
-                                {% if msg.score %}
-                                <div class="score-indicator">
-                                    Score: {{ (msg.score * 100) | int }}%
+                                <div class="message-header">
+                                    <strong>AIMS</strong>
+                                    <span class="message-time">{{ msg.answered_at.strftime('%H:%M') }}</span>
                                 </div>
-                                {% endif %}
+                                <div class="message-text">{{ msg.feedback }}</div>
                             </div>
                         </div>
                         {% endif %}
@@ -110,27 +86,77 @@
             
             <!-- Answer Input (only if not completed) -->
             {% if session.status != "completed" %}
-            <div class="chat-input-container">
+            <div class="chat-input-container" x-data="voiceRecorder()">
                 <form 
                     hx-post="/assess/{{ session.session_id }}/answer"
                     hx-target="#newMessages"
                     hx-swap="beforeend"
-                    hx-on::after-request="if(event.detail.successful) { this.reset(); scrollToBottom(); }"
+                    hx-on::before-request="event.target.querySelector('button[type=submit]').disabled = true"
+                    hx-on::after-request="event.target.querySelector('button[type=submit]').disabled = false; if(event.detail.successful) { event.target.reset(); htmx.ajax('POST', '/assess/{{ session.session_id }}/sidebar', {target: '#assessment-sidebar', swap: 'innerHTML'}); }"
+                    @htmx:after-request="if($event.detail.successful) { clearTranscript(); scrollToBottom(); }"
                     class="chat-input-form"
+                    x-ref="answerForm"
                 >
                     <textarea 
                         name="answer" 
-                        placeholder="Type your answer here..." 
+                        placeholder="Type your answer or use voice recording..." 
                         rows="3" 
                         required
                         x-ref="answerInput"
+                        x-model="transcript"
                         @keydown.ctrl.enter="$el.form.requestSubmit()"
                     ></textarea>
-                    <button type="submit" class="btn btn-primary">
-                        Send Answer
-                    </button>
+                    
+                    <div class="chat-input-actions">
+                        <!-- Voice Recording Button -->
+                        <button 
+                            type="button" 
+                            @click="toggleRecording()" 
+                            :class="{'btn-recording': isRecording}"
+                            :disabled="isTranscribing"
+                            class="btn btn-voice"
+                            title="Record voice answer">
+                            <span x-show="!isRecording && !hasRecording">🎤 Record</span>
+                            <span x-show="isRecording">⏹️ Stop</span>
+                            <span x-show="hasRecording && !isRecording">🔄 Re-record</span>
+                        </button>
+                        
+                        <!-- Transcribe Button (shows when recording exists) -->
+                        <button 
+                            type="button"
+                            x-show="hasRecording && !isTranscribing"
+                            @click="transcribeAudio()"
+                            class="btn btn-secondary"
+                            :disabled="isTranscribing">
+                            📝 Transcribe
+                        </button>
+                        
+                        <!-- Send Answer Button -->
+                        <button 
+                            type="submit" 
+                            class="btn btn-primary"
+                            :disabled="isTranscribing">
+                            Send Answer
+                        </button>
+                    </div>
                 </form>
-                <p class="input-hint">💡 Tip: Press Ctrl+Enter to send</p>
+                
+                <!-- Recording Status -->
+                <div x-show="isRecording" class="recording-status">
+                    <span class="recording-dot"></span>
+                    <span>Recording... <span x-text="recordingTime"></span>s</span>
+                </div>
+                
+                <!-- Transcription Loading -->
+                <div x-show="isTranscribing" class="transcription-loading">
+                    <div class="loading-spinner"></div>
+                    <span>Transcribing audio...</span>
+                </div>
+                
+                <!-- Error Message -->
+                <div x-show="errorMessage" class="error-message" x-text="errorMessage"></div>
+                
+                <p class="input-hint">💡 Tip: Press Ctrl+Enter to send | Use 🎤 to record voice answers</p>
             </div>
             {% else %}
             <div class="completion-message">
@@ -145,84 +171,6 @@
 {% endblock %}
 
 {% block scripts %}
-<script>
-function assessmentApp() {
-    return {
-        init() {
-            this.scrollToBottom();
-        },
-        scrollToBottom() {
-            const container = document.getElementById('chatMessages');
-            if (container) {
-                container.scrollTop = container.scrollHeight;
-            }
-        }
-    }
-}
-
-// Update progress bars dynamically
-function updateProgress(responseText) {
-    console.log('[Progress Update] Called with response:', responseText);
-    try {
-        const data = JSON.parse(responseText);
-        console.log('[Progress Update] Parsed data:', data);
-        data.progress.forEach(p => {
-            console.log(`[Progress Update] Processing outcome ${p.outcome_id}: ${p.mastery_level}`);
-            const outcomeItem = document.querySelector(`[data-outcome-id="${p.outcome_id}"]`);
-            if (outcomeItem) {
-                const progressBar = outcomeItem.querySelector('.progress-fill');
-                const masteryText = outcomeItem.querySelector('.outcome-mastery');
-                const mastery = Math.round(p.mastery_level * 100);
-                
-                console.log(`[Progress Update] Updating outcome ${p.outcome_id} to ${mastery}%`);
-                
-                if (progressBar) {
-                    progressBar.style.width = `${mastery}%`;
-                }
-                if (masteryText) {
-                    masteryText.textContent = `${mastery}% Mastery`;
-                }
-                
-                // Add mastered class if applicable
-                if (p.is_mastered) {
-                    outcomeItem.classList.add('mastered');
-                } else {
-                    outcomeItem.classList.remove('mastered');
-                }
-            } else {
-                console.log(`[Progress Update] Could not find outcome item for ID ${p.outcome_id}`);
-            }
-        });
-    } catch (e) {
-        console.error('[Progress Update] Failed to update progress:', e);
-    }
-}
-
-// Trigger progress update after form submission
-document.body.addEventListener('htmx:afterRequest', function(event) {
-    // Check if this was the answer submission
-    if (event.detail.pathInfo.requestPath.includes('/answer')) {
-        console.log('[HTMX] Answer submitted, triggering progress update');
-        // Fetch and update progress
-        const sessionId = window.location.pathname.split('/').pop();
-        fetch(`/api/progress/${sessionId}`)
-            .then(response => response.json())
-            .then(data => {
-                console.log('[Progress Fetch] Got progress data:', data);
-                updateProgress(JSON.stringify(data));
-            })
-            .catch(err => console.error('[Progress Fetch] Error:', err));
-    }
-});
-
-// Auto-scroll on new messages
-document.body.addEventListener('htmx:afterSwap', function(event) {
-    const container = document.getElementById('chatMessages');
-    if (container) {
-        setTimeout(() => {
-            container.scrollTop = container.scrollHeight;
-        }, 100);
-    }
-});
-</script>
+<script src="/static/js/assessment.js"></script>
+<script src="/static/js/voice-recorder.js"></script>
 {% endblock %}

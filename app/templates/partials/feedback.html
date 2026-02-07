@@ -1,29 +1,19 @@
-<!-- AI Response Message -->
-<div class="message ai">
-    <div class="message-avatar">🤖</div>
+<!-- User's Answer -->
+{% if user_answer %}
+<div class="message user">
     <div class="message-content">
         <div class="message-header">
-            <strong>AIMS</strong>
-            <span class="message-time">{{ feedback.timestamp if feedback.timestamp else 'Just now' }}</span>
+            <strong>You</strong>
+            <span class="message-time">Just now</span>
         </div>
-        <div class="message-text">{{ feedback }}</div>
-        {% if score %}
-        <div class="score-indicator {% if score >= 0.8 %}mastered{% elif score >= 0.5 %}partial{% else %}needs-work{% endif %}">
-            Score: {{ (score * 100) | int }}%
-            {% if score >= 0.8 %}
-            <span class="score-badge">✅ Mastered!</span>
-            {% elif score >= 0.5 %}
-            <span class="score-badge">🔄 Partial Understanding</span>
-            {% else %}
-            <span class="score-badge">📚 Needs More Work</span>
-            {% endif %}
-        </div>
-        {% endif %}
+        <div class="message-text">{{ user_answer }}</div>
     </div>
+    <div class="message-avatar">👤</div>
 </div>
+{% endif %}
 
+<!-- AI Response (combined feedback + next question if applicable) -->
 {% if next_question and status != "completed" %}
-<!-- Next Question -->
 <div class="message ai">
     <div class="message-avatar">🤖</div>
     <div class="message-content">
@@ -32,6 +22,13 @@
             <span class="message-time">Just now</span>
         </div>
         <div class="message-text">{{ next_question }}</div>
+    </div>
+</div>
+{% elif feedback %}
+<div class="message ai">
+    <div class="message-avatar">✨</div>
+    <div class="message-content">
+        <div class="message-text">{{ feedback }}</div>
     </div>
 </div>
 {% endif %}

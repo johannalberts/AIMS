@@ -5,11 +5,13 @@ Adaptive Intelligent Mastery System
 import os
 import uuid
 import logging
+import tempfile
 from datetime import datetime
+from pathlib import Path
 from typing import Optional, Annotated
 
-from fastapi import FastAPI, HTTPException, Depends, Request, Response, Form
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import FastAPI, HTTPException, Depends, Request, Response, Form, UploadFile, File
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,6 +29,7 @@ from app.auth import (
 )
 from app.services.assessment import AssessmentService
 from app.services.content import ContentService
+from app.services.transcription import get_transcription_service
 
 # Configure logging
 logging.basicConfig(
@@ -64,6 +67,15 @@ async def on_startup():
     logger.info("🚀 Starting AIMS application...")
     create_db_and_tables()
     logger.info("✅ Database tables created/verified")
+    
+    # Initialize Whisper model
+    try:
+        logger.info("🎤 Initializing Whisper transcription service...")
+        get_transcription_service()
+        logger.info("✅ Whisper service ready")
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize Whisper service: {e}")
+        logger.warning("⚠️ Voice transcription will not be available")
 
 
 # ============================================================================
@@ -317,14 +329,85 @@ async def assessment_interface(
         .where(OutcomeProgress.session_id == assessment.id)
     ).all()
     
+    # Build concept tracking for each outcome FIRST (before enriching messages)
+    # Try to get from LangGraph state if available
+    from langgraph.checkpoint.postgres import PostgresSaver
+    import json
+    import os
+    
+    concept_tracking = {}
+    try:
+        db_url = os.getenv("DATABASE_URL", "postgresql://aims_user:aims_password@postgres:5432/aims_db")
+        with PostgresSaver.from_conn_string(db_url) as checkpointer:
+            config = {"configurable": {"thread_id": str(assessment.session_id)}}
+            checkpoint = checkpointer.get(config)
+            
+            if checkpoint and checkpoint.get("channel_values"):
+                state = checkpoint["channel_values"]
+                concepts_covered_state = state.get("concepts_covered", {})
+                
+                # Build tracking for each outcome
+                for outcome in learning_outcomes:
+                    # Parse key concepts
+                    key_concepts = outcome.key_concepts
+                    if key_concepts and isinstance(key_concepts, str):
+                        try:
+                            key_concepts = json.loads(key_concepts)
+                        except:
+                            key_concepts = [k.strip() for k in key_concepts.split(',') if k.strip()]
+                    elif not key_concepts:
+                        key_concepts = []
+                    
+                    covered = concepts_covered_state.get(outcome.key, [])
+                    concept_tracking[outcome.id] = {
+                        "all": key_concepts,
+                        "covered": covered,
+                        "remaining": [c for c in key_concepts if c not in covered]
+                    }
+    except Exception as e:
+        # If checkpoint retrieval fails, build from outcome data
+        import logging
+        logging.warning(f"Could not retrieve checkpoint for concept tracking: {e}")
+        for outcome in learning_outcomes:
+            key_concepts = outcome.key_concepts
+            if key_concepts and isinstance(key_concepts, str):
+                try:
+                    key_concepts = json.loads(key_concepts)
+                except:
+                    key_concepts = [k.strip() for k in key_concepts.split(',') if k.strip()]
+            elif not key_concepts:
+                key_concepts = []
+            
+            concept_tracking[outcome.id] = {
+                "all": key_concepts,
+                "covered": [],
+                "remaining": key_concepts
+            }
+    
+    # Now enrich messages (simplified - no concept_info in chat)
+    enriched_messages = []
+    for msg in messages:
+        msg_dict = {
+            "id": msg.id,
+            "question": msg.question,
+            "answer": msg.answer,
+            "feedback": msg.feedback,
+            "score": msg.score,
+            "asked_at": msg.asked_at,
+            "answered_at": msg.answered_at,
+            "event_type": msg.event_type
+        }
+        enriched_messages.append(msg_dict)
+    
     return templates.TemplateResponse("assessment.html", {
         "request": request,
         "user": current_user,
         "session": assessment,
         "lesson": lesson,
         "learning_outcomes": learning_outcomes,
-        "messages": messages,
-        "progress": progress
+        "messages": enriched_messages,
+        "progress": progress,
+        "concept_tracking": concept_tracking
     })
 
 
@@ -352,12 +435,173 @@ async def submit_answer(
     # Return HTML fragment with feedback and next question
     return templates.TemplateResponse("partials/feedback.html", {
         "request": {},
+        "user_answer": answer,
         "feedback": result["feedback"],
         "score": result.get("score"),
         "status": result["status"],
         "next_question": result.get("next_question"),
         "current_outcome": result.get("current_outcome")
     })
+
+
+@app.post("/assess/{session_id}/sidebar")
+async def update_sidebar(
+    session_id: str,
+    current_user: User = Depends(require_user),
+    db_session: Session = Depends(get_session)
+):
+    """Return updated sidebar HTML fragment via HTMX."""
+    # Get assessment session
+    statement = select(AssessmentSession).where(
+        AssessmentSession.session_id == session_id
+    )
+    assessment = db_session.exec(statement).first()
+    
+    if not assessment or assessment.user_id != current_user.id:
+        raise HTTPException(status_code=404)
+    
+    # Get lesson and learning outcomes
+    lesson = db_session.get(Lesson, assessment.lesson_id)
+    learning_outcomes = db_session.exec(
+        select(LearningOutcome)
+        .where(LearningOutcome.lesson_id == lesson.id)
+        .order_by(LearningOutcome.order)
+    ).all()
+    
+    # Get progress
+    progress = db_session.exec(
+        select(OutcomeProgress)
+        .where(OutcomeProgress.session_id == assessment.id)
+    ).all()
+    
+    # Build concept tracking from LangGraph state
+    from langgraph.checkpoint.postgres import PostgresSaver
+    import json
+    import os
+    
+    concept_tracking = {}
+    try:
+        db_url = os.getenv("DATABASE_URL", "postgresql://aims_user:aims_password@postgres:5432/aims_db")
+        with PostgresSaver.from_conn_string(db_url) as checkpointer:
+            config = {"configurable": {"thread_id": str(assessment.session_id)}}
+            checkpoint = checkpointer.get(config)
+            
+            if checkpoint and checkpoint.get("channel_values"):
+                state = checkpoint["channel_values"]
+                concepts_covered_state = state.get("concepts_covered", {})
+                
+                # Build tracking for each outcome
+                for outcome in learning_outcomes:
+                    # Parse key concepts
+                    key_concepts = outcome.key_concepts
+                    if key_concepts and isinstance(key_concepts, str):
+                        try:
+                            key_concepts = json.loads(key_concepts)
+                        except:
+                            key_concepts = [k.strip() for k in key_concepts.split(',') if k.strip()]
+                    elif not key_concepts:
+                        key_concepts = []
+                    
+                    covered = concepts_covered_state.get(outcome.key, [])
+                    concept_tracking[outcome.id] = {
+                        "all": key_concepts,
+                        "covered": covered,
+                        "remaining": [c for c in key_concepts if c not in covered]
+                    }
+    except Exception as e:
+        import logging
+        logging.warning(f"Could not retrieve checkpoint for sidebar: {e}")
+        for outcome in learning_outcomes:
+            key_concepts = outcome.key_concepts
+            if key_concepts and isinstance(key_concepts, str):
+                try:
+                    key_concepts = json.loads(key_concepts)
+                except:
+                    key_concepts = [k.strip() for k in key_concepts.split(',') if k.strip()]
+            elif not key_concepts:
+                key_concepts = []
+            
+            concept_tracking[outcome.id] = {
+                "all": key_concepts,
+                "covered": [],
+                "remaining": key_concepts
+            }
+    
+    # Return sidebar partial
+    return templates.TemplateResponse("partials/sidebar.html", {
+        "request": {},
+        "learning_outcomes": learning_outcomes,
+        "progress": progress,
+        "concept_tracking": concept_tracking
+    })
+
+
+@app.post("/assess/transcribe")
+async def transcribe_audio(
+    audio: UploadFile = File(...),
+    current_user: User = Depends(require_user)
+):
+    """
+    Transcribe audio file to text using faster-whisper.
+    Returns JSON with transcript text.
+    """
+    temp_file = None
+    
+    try:
+        # Validate file
+        if not audio.content_type or not audio.content_type.startswith("audio/"):
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Invalid file type. Please upload an audio file."}
+            )
+        
+        # Check file size (max 10MB)
+        content = await audio.read()
+        if len(content) > 10 * 1024 * 1024:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "File too large. Maximum size is 10MB."}
+            )
+        
+        # Save to temporary file
+        suffix = Path(audio.filename).suffix if audio.filename else ".webm"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+            temp_file.write(content)
+            temp_path = temp_file.name
+        
+        logger.info(f"Transcribing audio from user {current_user.username}: {audio.filename}")
+        
+        # Transcribe
+        transcription_service = get_transcription_service()
+        result = transcription_service.transcribe_audio(temp_path)
+        
+        # Clean up temp file
+        os.unlink(temp_path)
+        
+        # Check for errors
+        if "error" in result:
+            return JSONResponse(
+                status_code=400,
+                content={"error": result["error"]}
+            )
+        
+        logger.info(f"✅ Transcription successful: {len(result['text'])} chars")
+        
+        return JSONResponse(content={
+            "transcript": result["text"],
+            "language": result["language"]
+        })
+        
+    except Exception as e:
+        # Clean up temp file if it exists
+        if temp_file and os.path.exists(temp_file.name):
+            os.unlink(temp_file.name)
+        
+        logger.error(f"❌ Transcription failed: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Transcription failed: {str(e)}"}
+        )
 
 
 # ============================================================================

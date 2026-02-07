@@ -191,7 +191,9 @@ class AssessmentService:
         
         if last_qa:
             last_qa.answer = answer
-            last_qa.feedback = result.get("feedback", "")
+            # Store the combined message (acknowledgment + next question) as feedback
+            # This ensures live and historical views are consistent
+            last_qa.feedback = result.get("last_question", "")
             last_qa.answered_at = datetime.utcnow()
             
             # Extract score from feedback if available
@@ -242,31 +244,7 @@ class AssessmentService:
         
         self.db_session.commit()
         
-        logger.info(f"Returning feedback: {result.get('feedback', 'No feedback')[:100]}")
-        
-        # If there's a new question, create a new QA record
-        if result.get("last_question") and result.get("current_outcome_key") != "all_mastered":
-            current_outcome = next(
-                (o for o in outcomes if o.key == result.get("current_outcome_key")),
-                None
-            )
-            
-            if current_outcome:
-                event_type = "question"
-                # Determine event type based on feedback
-                if "rephrase" in result.get("feedback", "").lower():
-                    event_type = "rephrase"
-                elif "re-teach" in result.get("feedback", "").lower() or "let me explain" in result.get("feedback", "").lower():
-                    event_type = "re_teach"
-                
-                qa = QuestionAnswer(
-                    session_id=assessment.id,
-                    learning_outcome_id=current_outcome.id,
-                    question=result.get("last_question"),
-                    event_type=event_type
-                )
-                self.db_session.add(qa)
-                self.db_session.commit()
+        logger.info(f"Returning combined message: {result.get('last_question', 'No question')[:100]}")
         
         return {
             "feedback": result.get("feedback"),
