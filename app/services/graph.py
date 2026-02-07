@@ -318,10 +318,10 @@ class AIMSGraph:
             key_concepts = "General understanding of the learning outcome"
         
         # Check if this is a follow-up after partial understanding
+        # Use follow-up when student showed SOME understanding (0.2-0.8) but didn't master it
         is_followup = (
             state.get("last_response") and 
-            0.4 <= mastery_level < 0.8 and 
-            state.get("failed_attempts", 0) > 0
+            0.2 <= mastery_level < 0.8
         )
         
         try:

@@ -1,29 +1,18 @@
-<!-- AI Response Message -->
-<div class="message ai">
-    <div class="message-avatar">🤖</div>
+<!-- User's Answer -->
+{% if user_answer %}
+<div class="message user">
     <div class="message-content">
         <div class="message-header">
-            <strong>AIMS</strong>
-            <span class="message-time">{{ feedback.timestamp if feedback.timestamp else 'Just now' }}</span>
+            <strong>You</strong>
+            <span class="message-time">Just now</span>
         </div>
-        <div class="message-text">{{ feedback }}</div>
-        {% if score %}
-        <div class="score-indicator {% if score >= 0.8 %}mastered{% elif score >= 0.5 %}partial{% else %}needs-work{% endif %}">
-            Score: {{ (score * 100) | int }}%
-            {% if score >= 0.8 %}
-            <span class="score-badge">✅ Mastered!</span>
-            {% elif score >= 0.5 %}
-            <span class="score-badge">🔄 Partial Understanding</span>
-            {% else %}
-            <span class="score-badge">📚 Needs More Work</span>
-            {% endif %}
-        </div>
-        {% endif %}
+        <div class="message-text">{{ user_answer }}</div>
     </div>
+    <div class="message-avatar">👤</div>
 </div>
+{% endif %}
 
-{% if next_question and status != "completed" %}
-<!-- Next Question -->
+<!-- AI Response Message (Merged Feedback + Follow-up) -->
 <div class="message ai">
     <div class="message-avatar">🤖</div>
     <div class="message-content">
@@ -31,10 +20,64 @@
             <strong>AIMS</strong>
             <span class="message-time">Just now</span>
         </div>
+        
+        <!-- Concept Progress (if available) -->
+        {% if concept_info %}
+        <div class="concept-progress" style="margin-bottom: 12px; padding: 10px; background: var(--bg-secondary); border-radius: 8px; border-left: 3px solid var(--primary);">
+            <div style="font-size: 0.9em; font-weight: 600; margin-bottom: 8px; color: var(--text-primary);">
+                Progress: {{ concept_info.addressed_count }}/{{ concept_info.total_count }} concepts
+            </div>
+            
+            {% if concept_info.addressed_concepts %}
+            <div style="margin-bottom: 8px;">
+                <div style="font-size: 0.85em; color: var(--success); margin-bottom: 4px;">✅ Covered:</div>
+                <ul style="margin: 0; padding-left: 20px; font-size: 0.85em; color: var(--text-secondary);">
+                    {% for concept in concept_info.addressed_concepts %}
+                    <li style="color: var(--success);">{{ concept }}</li>
+                    {% endfor %}
+                </ul>
+            </div>
+            {% endif %}
+            
+            {% if concept_info.remaining_concepts %}
+            <div>
+                <div style="font-size: 0.85em; color: var(--warning); margin-bottom: 4px;">⏳ Still needed:</div>
+                <ul style="margin: 0; padding-left: 20px; font-size: 0.85em;">
+                    {% for concept in concept_info.remaining_concepts %}
+                    <li style="color: var(--text-secondary);">{{ concept }}</li>
+                    {% endfor %}
+                </ul>
+            </div>
+            {% endif %}
+        </div>
+        {% endif %}
+        
+        <!-- Combined Feedback + Follow-up Question -->
+        <!-- If we have a next_question (which already contains acknowledgment), use it; otherwise use feedback -->
+        {% if next_question and status != "completed" %}
         <div class="message-text">{{ next_question }}</div>
+        {% elif feedback %}
+        <div class="message-text">{{ feedback }}</div>
+        {% endif %}
+        
+        <!-- Score Indicator -->
+        {% if score is not none %}
+        <div class="score-indicator {% if score >= 0.8 %}mastered{% elif score >= 0.5 %}partial{% else %}needs-work{% endif %}">
+            Score: {{ (score * 100) | int }}%
+            {% if concept_info %}
+            ({{ concept_info.addressed_count }}/{{ concept_info.total_count }} concepts)
+            {% endif %}
+            {% if score >= 0.8 %}
+            <span class="score-badge">✅ Mastered!</span>
+            {% elif score >= 0.5 %}
+            <span class="score-badge">🔄 Partial Understanding</span>
+            {% else %}
+            <span class="score-badge">📚 Keep Going!</span>
+            {% endif %}
+        </div>
+        {% endif %}
     </div>
 </div>
-{% endif %}
 
 {% if status == "completed" %}
 <!-- Completion Message -->

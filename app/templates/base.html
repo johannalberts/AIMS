@@ -26,7 +26,7 @@
                     <a href="/" class="text-xl font-bold text-indigo-600 dark:text-indigo-400">🎯 AIMS</a>
                 </div>
                 <div class="flex items-center gap-4">
-                    <span class="text-sm text-gray-700 dark:text-gray-300">{{ user.username }} ({{ user.role.value }})</span>
+                    <span class="text-sm text-gray-700 dark:text-gray-300">{{ user.username }}</span>
                     {% if user.role.value == "ADMIN" or user.role.value == "CONTENT_MANAGER" %}
                     <a href="/content-management" class="text-sm text-gray-700 dark:text-gray-300 hover:text-indigo-600 dark:hover:text-indigo-400">Content</a>
                     {% endif %}

@@ -9,9 +9,11 @@ AIMS (Adaptive Intelligent Mastery System) is a revolutionary educational assess
 Traditional assessments rely on static questions that may not capture a student's actual understanding. AIMS takes a fundamentally different approach:
 
 - **Mastery-Focused**: Each learning outcome must reach a specified mastery threshold (80%+) before moving on
-- **Adaptive Questioning**: Questions are generated in real-time based on the student's current understanding
+- **Concept-Level Tracking**: Individual key concepts within each outcome are tracked and visualized
+- **Adaptive Questioning**: Questions are generated in real-time based on the student's current understanding and missing concepts
 - **Intelligent Remediation**: When students struggle, the system rephrases questions or provides targeted re-teaching
 - **Continuous Assessment**: No more one-and-done tests - students work until they demonstrate true mastery
+- **Rich Persistence**: Complete conversation history, concept coverage, and mastery progression stored in PostgreSQL
 
 ## 🧠 How It Works
 
@@ -20,12 +22,17 @@ AIMS uses a sophisticated graph-based workflow powered by LangGraph and large la
 ### Assessment Flow
 
 1. **Outcome Selection**: The system identifies learning outcomes that haven't reached mastery
-2. **Dynamic Question Generation**: AI generates questions tailored to test specific learning outcomes
-3. **Intelligent Assessment**: Student responses are evaluated for understanding, not just correctness
-4. **Adaptive Response**:
-   - ✅ **Mastery Achieved**: Positive feedback and move to next outcome
-   - 🔄 **Needs Clarification**: Rephrase question with hints
-   - 📚 **Needs Re-teaching**: Provide targeted explanation and retry
+2. **Dynamic Question Generation**: AI generates questions tailored to test specific learning outcomes and missing key concepts
+3. **Intelligent Assessment**: Student responses are evaluated for:
+   - Understanding depth (not just correctness)
+   - Which specific concepts were addressed
+   - Mastery level calculation (0-100%)
+4. **Concept Tracking**: Real-time tracking of which concepts have been covered vs. remaining
+5. **Adaptive Response**:
+   - ✅ **Mastery Achieved** (80%+): Positive feedback and move to next outcome
+   - 🔄 **Partial Understanding** (20-80%): Targeted follow-up on missing concepts with acknowledgment of what was correct
+   - 📚 **Needs Re-teaching** (<20%): Comprehensive explanation and retry
+6. **State Persistence**: All progress, concept coverage, and conversation history saved to database
 
 ### Example Learning Journey
 
@@ -59,23 +66,50 @@ For an HTML lesson with learning outcomes like "Understanding HTML tags and sema
 app/
 ├── main.py              # FastAPI application & routes
 ├── models.py            # SQLModel database models
-├── database.py          # PostgreSQL connection
+├── database.py          # PostgreSQL connection & checkpointer
 ├── auth.py              # Authentication & authorization
 ├── services/
 │   ├── assessment.py    # Assessment logic & persistence
-│   └── graph.py         # LangGraph AI workflow
+│   ├── graph.py         # LangGraph AI workflow
+│   ├── content.py       # Content management API
+│   └── transcription.py # Voice-to-text (faster-whisper)
 ├── templates/           # Jinja2 HTML templates
-└── static/             # CSS and JavaScript
+│   ├── assessment.html  # Chat-style assessment interface
+│   ├── content_management.html  # Content CRUD interface
+│   └── partials/        # HTMX partial responses
+└── static/
+    ├── css/             # Organized stylesheets
+    └── js/              # Modular JavaScript components
 ```
 
 ### Assessment Graph Nodes
 
-- **choose_outcome**: Selects next learning outcome to assess
-- **generate_question**: Creates tailored questions using AI
-- **assess_answer**: Evaluates student responses for mastery
-- **rephrase_question**: Provides hints and clarification
-- **re_teach_concept**: Delivers targeted remediation
-- **provide_feedback**: Celebrates mastery achievement
+- **choose_outcome**: Selects next learning outcome to assess based on mastery levels
+- **generate_question**: Creates tailored questions using AI, considering:
+  - Current mastery level (0-100%)
+  - Concepts already covered
+  - Concepts still needed
+  - Whether this is a follow-up or fresh question
+- **assess_answer**: Evaluates student responses for:
+  - Mastery score (0.0-1.0)
+  - Specific concepts addressed in the answer
+  - Updated concept coverage state
+- **rephrase_question**: Provides hints and clarification when needed
+- **re_teach_concept**: Delivers targeted remediation with examples
+- **provide_feedback**: Celebrates mastery achievement and transitions to next outcome
+
+### LangGraph State Management
+
+The assessment graph maintains rich state including:
+- **learning_outcomes**: Dict of all outcomes with mastery levels
+- **concepts_covered**: Dict mapping outcome keys to lists of covered concepts
+- **current_outcome_key**: Which outcome is being assessed
+- **last_question**: Most recent question generated
+- **last_response**: Student's most recent answer
+- **failed_attempts**: Counter for adaptive difficulty
+- **feedback**: Generated feedback text
+
+State is persisted using PostgresSaver checkpointer for seamless session continuity.
 
 ## 🚀 Getting Started
 
@@ -202,10 +236,20 @@ docker compose down -v
    - Advances when you demonstrate mastery (80%+)
 7. **Complete** all 6 learning outcomes
 
+**For Content Management:**
+1. **Login** as Content Manager or Admin
+2. **Navigate** to Content Management from the dashboard
+3. **Create courses** with AI-suggested lesson structures
+4. **Define learning outcomes** with key concepts (comma-separated)
+5. **Add content chunks** (definitions, explanations, examples, procedures)
+6. **Generate AI content** for individual outcomes or entire courses in bulk
+7. **Reorder content** chunks using drag-and-drop or arrow controls
+8. **Preview and edit** all content before publishing
+
 **For Admin Features:**
 1. **Login** at http://localhost:8000/admin with `admin@aims.com` / `admin123`
-2. **Create** new courses, lessons, and learning outcomes
-3. **Manage** users and view assessment sessions
+2. **Manage** users, courses, lessons, and assessment sessions
+3. **View** raw database records and relationships
 
 See [SETUP.md](SETUP.md) for detailed usage documentation.
 
@@ -240,14 +284,22 @@ with Session(engine) as session:
 ## 🌟 Key Features (v2.0)
 
 - **🎯 Mastery-Based Learning**: Focus on understanding, not completion
-- **🤖 AI-Powered Assessment**: Dynamic question generation and evaluation
-- **🔄 Adaptive Remediation**: Intelligent reteaching based on student needs
-- **📈 Progress Tracking**: Real-time mastery level monitoring per outcome
-- **🎨 Personalized Experience**: Each assessment journey is unique
-- **⚡ Real-time Feedback**: Immediate evaluation and guidance via HTMX
-- **👥 Multi-User Support**: Admin and learner roles with authentication
-- **🏗️ Course Management**: Organize content hierarchically
-- **💾 Full Persistence**: Complete conversation history in database
+- **� Concept-Level Tracking**: Individual tracking and visualization of key concepts within each learning outcome
+- **🤖 AI-Powered Assessment**: Dynamic question generation and evaluation with concept awareness
+- **🔄 Adaptive Remediation**: Intelligent reteaching based on student needs and missing concepts
+- **📈 Progress Tracking**: Real-time mastery level monitoring per outcome with concept breakdowns
+- **🎨 Personalized Experience**: Each assessment journey is unique and adapts to concept gaps
+- **⚡ Real-time Feedback**: Immediate evaluation and guidance via HTMX with concept progress display
+- **👥 Multi-User Support**: Admin, Content Manager, and Learner roles with authentication
+- **🏗️ Content Management Dashboard**: Comprehensive CRUD interface for courses, lessons, outcomes, and content chunks
+  - Create and edit courses with AI-powered structure suggestions
+  - Define learning outcomes with key concepts
+  - Add content chunks (definitions, explanations, examples, procedures)
+  - Bulk AI content generation for entire courses
+  - Reorder and manage content hierarchically
+- **🎤 Voice Input**: Faster-whisper integration for speech-to-text answers (local, CPU-based)
+- **💾 Full Persistence**: Complete conversation history, concept coverage, and graph state in PostgreSQL
+- **🔄 Session Continuity**: LangGraph PostgresSaver ensures seamless state recovery across sessions
 - **📊 Admin Dashboard**: Web-based content management with SQLAdmin
 
 ## 🛠️ Technology Stack
@@ -272,14 +324,16 @@ with Session(engine) as session:
 
 ## 🔮 Future Enhancements
 
-- **Learning Analytics Dashboard**: Visualize mastery progression and time-to-mastery
-- **Multi-modal Assessment**: Support for images, diagrams, and code snippets
-- **Collaborative Learning**: Peer assessment integration
-- **Adaptive Content**: Dynamic lesson content based on mastery gaps
-- **Integration APIs**: LMS and educational platform connectors
-- **Email Verification**: Secure user registration
-- **Export Functionality**: Download assessment transcripts and certificates
-- **Real-time Updates**: WebSocket support for live progress
+- **Learning Analytics Dashboard**: Visualize mastery progression, time-to-mastery, and concept coverage patterns
+- **Multi-modal Assessment**: Support for images, diagrams, and code snippets in questions and answers
+- **Collaborative Learning**: Peer assessment and study group features
+- **Enhanced Voice Input**: Multi-language support and custom vocabulary
+- **Integration APIs**: LMS connectors (Canvas, Moodle, Blackboard)
+- **Email Verification**: Secure user registration and password reset
+- **Export Functionality**: Download assessment transcripts, certificates, and learning analytics
+- **Real-time Updates**: WebSocket support for live progress in group settings
+- **Mobile Apps**: Native iOS and Android applications
+- **Offline Mode**: Continue assessments without internet connection
 
 ## 📚 Documentation
 

@@ -191,7 +191,9 @@ class AssessmentService:
         
         if last_qa:
             last_qa.answer = answer
-            last_qa.feedback = result.get("feedback", "")
+            # Store the next question (which contains integrated feedback) instead of raw feedback
+            # This way historical messages display the same rich content as live responses
+            last_qa.feedback = result.get("last_question", result.get("feedback", ""))
             last_qa.answered_at = datetime.utcnow()
             
             # Extract score from feedback if available
@@ -268,10 +270,49 @@ class AssessmentService:
                 self.db_session.add(qa)
                 self.db_session.commit()
         
+        # Extract concept tracking for the current outcome
+        current_outcome_key = result.get("current_outcome_key")
+        concept_info = None
+        
+        if current_outcome_key and current_outcome_key != "all_mastered":
+            # Get the learning outcome
+            current_outcome = next(
+                (o for o in outcomes if o.key == current_outcome_key),
+                None
+            )
+            
+            if current_outcome:
+                # Get all key concepts
+                import json
+                key_concepts = current_outcome.key_concepts
+                if key_concepts and isinstance(key_concepts, str):
+                    try:
+                        key_concepts = json.loads(key_concepts)
+                    except:
+                        key_concepts = [k.strip() for k in key_concepts.split(',') if k.strip()]
+                elif not key_concepts:
+                    key_concepts = []
+                
+                # Get concepts covered so far
+                concepts_covered = result.get("concepts_covered", {}).get(current_outcome_key, [])
+                
+                # Calculate remaining concepts
+                remaining_concepts = [c for c in key_concepts if c not in concepts_covered]
+                
+                concept_info = {
+                    "outcome_description": current_outcome.description,
+                    "all_concepts": key_concepts,
+                    "addressed_concepts": concepts_covered,
+                    "remaining_concepts": remaining_concepts,
+                    "total_count": len(key_concepts),
+                    "addressed_count": len(concepts_covered)
+                }
+        
         return {
             "feedback": result.get("feedback"),
             "score": last_qa.score if last_qa else None,
             "status": assessment.status,
             "current_outcome": result.get("current_outcome_key"),
-            "next_question": result.get("last_question")
+            "next_question": result.get("last_question"),
+            "concept_info": concept_info
         }
