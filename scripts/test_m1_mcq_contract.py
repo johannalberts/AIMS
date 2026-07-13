@@ -227,18 +227,21 @@ def run() -> int:
     except ValueError:
         check("all-invalid raises ValueError", True)
 
-    # --- 12. make_generator picks StubGenerator when no API key ---
+    # --- 12. make_generator picks StubGenerator when no provider key ---
     print("[12] make_generator falls back to StubGenerator without API key")
-    saved = os.environ.pop("OPENAI_API_KEY", None)
+    saved_oai = os.environ.pop("OPENAI_API_KEY", None)
+    saved_or = os.environ.pop("OPENROUTER_API_KEY", None)
     try:
-        # Without an API key and no llm, make_generator should use StubGenerator.
-        # StubGenerator and make_generator are imported at module top.
+        # With no provider key and no llm, make_generator should use StubGenerator.
+        # make_generator is imported at module top.
         g = make_generator(gen_ctx())
         p = g()
         check("make_generator returns MCQPayload without key", isinstance(p, MCQPayload))
     finally:
-        if saved is not None:
-            os.environ["OPENAI_API_KEY"] = saved
+        if saved_oai is not None:
+            os.environ["OPENAI_API_KEY"] = saved_oai
+        if saved_or is not None:
+            os.environ["OPENROUTER_API_KEY"] = saved_or
 
     # --- Summary ---
     print("=" * 60)

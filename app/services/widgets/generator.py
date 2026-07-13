@@ -20,7 +20,6 @@ loop live in judge.judge_or_regenerate, which wraps any generator callable.
 from __future__ import annotations
 
 import logging
-import os
 
 from app.services.widgets.schema import (
     GenerationContext,
@@ -28,6 +27,7 @@ from app.services.widgets.schema import (
     MCQPayload,
     QuestionPayload,
 )
+from app.services.widgets.llm import build_llm, llm_available, LLMConfigError
 
 logger = logging.getLogger(__name__)
 
@@ -113,11 +113,10 @@ class MCQGenerator:
 
     def __init__(self, llm=None):
         if llm is None:
-            from langchain_openai import ChatOpenAI
-            api_key = os.getenv("OPENAI_API_KEY")
-            if not api_key:
-                raise GeneratorError("OPENAI_API_KEY not set; cannot construct MCQGenerator")
-            llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.7, api_key=api_key)
+            try:
+                llm = build_llm(temperature=0.7)
+            except LLMConfigError as e:
+                raise GeneratorError(str(e)) from e
         self.llm = llm
 
     def __call__(self, context: GenerationContext) -> QuestionPayload:
@@ -153,10 +152,14 @@ def make_generator(context: GenerationContext, llm=None) -> "callable":
 
     The returned callable closes over `context` so it matches the
     judge_or_regenerate(generate_fn, ...) signature.
+
+    Provider selection: an explicit `llm` wins; otherwise if any LLM provider
+    is configured via env (OpenRouter or OpenAI, see llm.py) the MCQGenerator
+    is used; otherwise fall back to StubGenerator so tests run without a key.
     """
     if llm is not None:
         gen = MCQGenerator(llm=llm)
-    elif os.getenv("OPENAI_API_KEY"):
+    elif llm_available():
         gen = MCQGenerator()
     else:
         gen = StubGenerator()

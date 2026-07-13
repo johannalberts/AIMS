@@ -20,6 +20,7 @@ from app.services.widgets.schema import (
     GenerationContext,
     JudgeContext,
 )
+from app.services.widgets.llm import build_llm, llm_available, provider_name, LLMConfigError
 
 __all__ = [
     "WidgetType",
@@ -31,4 +32,8 @@ __all__ = [
     "ScoreResult",
     "GenerationContext",
     "JudgeContext",
+    "build_llm",
+    "llm_available",
+    "provider_name",
+    "LLMConfigError",
 ]
