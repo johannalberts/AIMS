@@ -336,7 +336,16 @@ def _render_widget_assessment(
     progress,
     messages,
 ):
-    """Server-render the widget assessment page (M2)."""
+    """Server-render the widget assessment page (M2 + M3 remediation timeline).
+
+    Walks the QuestionAnswer history in order and dispatches by event_type /
+    widget_type:
+      - `re_teach` event  → render the teach-panel partial (M3)
+      - `mcq_single` with no answer   → live interactive MCQ card
+      - `mcq_single` with an answer   → read-only answered card
+    Kept simple (single pass, append in order) so a page reload reproduces the
+    same teach → re-ask sequence the learner saw interactively.
+    """
     import json as _json
     from app.services.widgets.schema import MCQPayload, WidgetType
     from app.services.widget_assessment import (
@@ -346,11 +355,21 @@ def _render_widget_assessment(
 
     outcomes_by_id = {o.id: o for o in learning_outcomes}
 
-    answered_turns: list[dict] = []
+    timeline: list[dict] = []
     open_payload = None
     open_outcome = None
 
     for msg in messages:
+        if msg.event_type == "re_teach":
+            # M3 remediation event — render the teach panel inline.
+            try:
+                remediation = _json.loads(msg.question_payload) if msg.question_payload else {}
+            except (ValueError, TypeError):
+                remediation = {}
+            outcome = outcomes_by_id.get(msg.learning_outcome_id)
+            remediation.setdefault("outcome_key", outcome.key if outcome else "")
+            timeline.append({"kind": "teach", "remediation": remediation})
+            continue
         if msg.widget_type != WidgetType.MCQ_SINGLE.value:
             continue
         if msg.answer is None and msg.question_payload:
@@ -363,7 +382,7 @@ def _render_widget_assessment(
         elif msg.answer is not None:
             turn = _widget_turn_from_qa(msg, outcomes_by_id)
             if turn:
-                answered_turns.append(turn)
+                timeline.append({"kind": "answered", "turn": turn})
 
     concept_tracking = build_widget_concept_tracking(
         db_session, assessment, list(learning_outcomes)
@@ -377,7 +396,7 @@ def _render_widget_assessment(
         "learning_outcomes": learning_outcomes,
         "progress": progress,
         "concept_tracking": concept_tracking,
-        "answered_turns": answered_turns,
+        "timeline": timeline,
         "open_payload": open_payload,
         "open_outcome": open_outcome,
     })
@@ -581,15 +600,17 @@ async def submit_widget_answer(
         raise HTTPException(status_code=400, detail=str(e))
 
     answered_payload = result["answered_payload"]
+    answered_outcome = result.get("answered_outcome")
     score = result["score_result"]
     next_payload = result["next_payload"]
     next_outcome = result["next_outcome"]
 
-    # The answered card header needs an outcome key — prefer the next outcome's
-    # key (continuity) but fall back to the answered payload's concept's
-    # outcome. We don't have the original outcome object here, but the route
-    # only needs its key for display.
-    outcome_key = next_outcome.key if next_outcome else answered_payload.concept_tested
+    # The answered card header shows the answered question's outcome key (not
+    # the next one's), so after a wrong answer the card is labelled with the
+    # outcome the learner was just working on.
+    outcome_key = (
+        answered_outcome.key if answered_outcome else answered_payload.concept_tested
+    )
 
     return templates.TemplateResponse("partials/widgets/mcq_feedback.html", {
         "request": {},
@@ -603,6 +624,9 @@ async def submit_widget_answer(
         "next_outcome": next_outcome,
         "session": assessment,
         "status": result["status"],
+        "remediation": result.get("remediation"),
+        "escalation_capped": result.get("escalation_capped", False),
+        "capped_concept": result.get("capped_concept"),
     })
 
 

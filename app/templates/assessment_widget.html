@@ -29,18 +29,25 @@
                     </div>
                     {% endif %}
 
-                    {# Render previously-answered MCQs as read-only cards. #}
-                    {% for turn in answered_turns %}
-                        {% with
-                            payload=turn.payload,
-                            selected_option_id=turn.selected_option_id,
-                            is_correct=turn.is_correct,
-                            correct_option_id=turn.correct_option_id,
-                            explanation=turn.explanation,
-                            outcome_key=turn.outcome_key
-                        %}
-                            {% include "partials/widgets/mcq_answered.html" %}
-                        {% endwith %}
+                    {# Render the prior turns in order: answered MCQs and
+                       (M3) re_teach panels interspersed as they happened. #}
+                    {% for item in timeline %}
+                        {% if item.kind == "teach" %}
+                            {% with remediation=item.remediation %}
+                                {% include "partials/remediation/teach_panel.html" %}
+                            {% endwith %}
+                        {% elif item.kind == "answered" %}
+                            {% with
+                                payload=item.turn.payload,
+                                selected_option_id=item.turn.selected_option_id,
+                                is_correct=item.turn.is_correct,
+                                correct_option_id=item.turn.correct_option_id,
+                                explanation=item.turn.explanation,
+                                outcome_key=item.turn.outcome_key
+                            %}
+                                {% include "partials/widgets/mcq_answered.html" %}
+                            {% endwith %}
+                        {% endif %}
                     {% endfor %}
 
                     {# Render the current open question as an interactive card. #}
