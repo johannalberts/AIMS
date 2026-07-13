@@ -1,0 +1,41 @@
+{#
+Single answered MCQ card (read-only). Used both for historical turns on page
+load and as the first half of the POST response.
+Context vars:
+  payload             — MCQPayload
+  selected_option_id  — str
+  is_correct          — bool
+  correct_option_id  — str
+  explanation         — str | None
+  outcome_key         — str (for the header badge)
+#}
+<div class="mcq-card mcq-answered {% if is_correct %}mcq-correct{% else %}mcq-wrong{% endif %}">
+    <div class="mcq-card-header">
+        <span class="outcome-key">{{ outcome_key }}</span>
+    </div>
+    <div class="mcq-stem">{{ payload.stem }}</div>
+    <ul class="mcq-options mcq-options-readonly">
+        {% for opt in payload.options %}
+        <li class="mcq-option
+            {% if opt.id == correct_option_id %}option-correct{% endif %}
+            {% if opt.id == selected_option_id and not is_correct %}option-wrong{% endif %}
+            {% if opt.id == selected_option_id and is_correct %}option-selected-correct{% endif %}">
+            <span class="mcq-option-marker">
+                {% if opt.id == correct_option_id %}✓{% elif opt.id == selected_option_id %}✗{% else %}·{% endif %}
+            </span>
+            <span class="mcq-option-text">{{ opt.text }}</span>
+            {% if opt.id == selected_option_id %}
+                <span class="mcq-your-answer">your answer</span>
+            {% endif %}
+        </li>
+        {% endfor %}
+    </ul>
+    <div class="mcq-feedback">
+        {% if is_correct %}
+            <span class="mcq-feedback-correct">✅ Correct.</span>
+        {% else %}
+            <span class="mcq-feedback-wrong">❌ Not quite.</span>
+        {% endif %}
+        {% if explanation %}<span class="mcq-explanation">{{ explanation }}</span>{% endif %}
+    </div>
+</div>

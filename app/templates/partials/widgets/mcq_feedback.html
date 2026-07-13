@@ -1,0 +1,20 @@
+{#
+Response body for POST /assess/{session_id}/widget-answer.
+Contains: answered card (inline) + completion card or next unanswered card.
+Context vars:
+  payload, selected_option_id, is_correct, correct_option_id, explanation,
+  outcome_key, next_payload, next_outcome, session, status
+#}
+{% include "partials/widgets/mcq_answered.html" %}
+
+{% if status == "completed" %}
+<div class="mcq-card mcq-completion">
+    <h2>🎉 Assessment complete!</h2>
+    <p>You've been asked about every concept in this lesson.</p>
+    <a href="/dashboard" class="btn btn-primary">Return to dashboard</a>
+</div>
+{% elif next_payload and next_outcome %}
+{% with payload=next_payload, outcome=next_outcome, session=session %}
+    {% include "partials/widgets/mcq_unanswered.html" %}
+{% endwith %}
+{% endif %}
