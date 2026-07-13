@@ -80,6 +80,7 @@ class Lesson(SQLModel, table=True):
     estimated_duration_minutes: Optional[int] = None
     mastery_threshold: float = Field(default=0.8)  # Default 80%
     is_active: bool = Field(default=True)
+    use_widget_assessment: bool = Field(default=False)  # M2: MCQ widget path vs chat
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     
@@ -178,7 +179,17 @@ class QuestionAnswer(SQLModel, table=True):
     answer: Optional[str] = None
     feedback: Optional[str] = None
     score: Optional[float] = None  # 0.0 to 1.0
-    
+
+    # M2: structured payload support for widget-based assessments.
+    # question_payload / response_payload are JSON-serialized QuestionPayload
+    # / LearnerResponse (see app/services/widgets/schema.py). Kept Optional and
+    # nullable so existing chat-path rows remain valid.
+    question_payload: Optional[str] = Field(default=None, sa_column=Column(Text))
+    response_payload: Optional[str] = Field(default=None, sa_column=Column(Text))
+    widget_type: Optional[str] = Field(default=None)  # e.g. "mcq_single"
+    is_correct: Optional[bool] = Field(default=None)
+    concept_tested: Optional[str] = Field(default=None)  # denormalized from payload
+
     event_type: str = Field(default="question")  # question, rephrase, re_teach
     
     asked_at: datetime = Field(default_factory=datetime.utcnow)

@@ -30,6 +30,11 @@ from app.auth import (
 from app.services.assessment import AssessmentService
 from app.services.content import ContentService
 from app.services.transcription import get_transcription_service
+from app.services.widget_assessment import (
+    WidgetAssessmentService,
+    WidgetAssessmentError,
+    build_concept_tracking as build_widget_concept_tracking,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -279,12 +284,103 @@ async def start_lesson(
     session.add(assessment_session)
     session.commit()
     session.refresh(assessment_session)
-    
-    # Initialize assessment service and get first question
+
+    # Pick the appropriate service for this lesson.
+    if getattr(lesson, "use_widget_assessment", False):
+        widget_service = WidgetAssessmentService(session)
+        try:
+            widget_service.start_assessment(assessment_session.id)
+        except WidgetAssessmentError as e:
+            logger.error(f"Failed to start widget assessment: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+        return RedirectResponse(f"/assess/{session_id}", status_code=303)
+
+    # Existing chat-path service.
     service = AssessmentService(session)
     result = service.start_assessment(assessment_session.id)
-    
+
     return RedirectResponse(f"/assess/{session_id}", status_code=303)
+
+
+def _widget_turn_from_qa(qa: QuestionAnswer, outcomes_by_id) -> Optional[dict]:
+    """Rebuild the renderer context for an answered MCQ QuestionAnswer row."""
+    import json as _json
+    if not qa.question_payload or not qa.answer:
+        return None
+    try:
+        payload = _json.loads(qa.question_payload)
+    except (ValueError, TypeError):
+        return None
+    correct_id = next(
+        (o["id"] for o in payload.get("options", []) if o.get("is_correct")),
+        None,
+    )
+    outcome = outcomes_by_id.get(qa.learning_outcome_id)
+    return {
+        "payload": payload,
+        "selected_option_id": qa.answer,
+        "is_correct": bool(qa.is_correct),
+        "correct_option_id": correct_id,
+        "explanation": qa.feedback,
+        "outcome_key": outcome.key if outcome else "",
+    }
+
+
+def _render_widget_assessment(
+    request: Request,
+    current_user: User,
+    db_session: Session,
+    assessment,
+    lesson,
+    learning_outcomes,
+    progress,
+    messages,
+):
+    """Server-render the widget assessment page (M2)."""
+    import json as _json
+    from app.services.widgets.schema import MCQPayload, WidgetType
+    from app.services.widget_assessment import (
+        _parse_key_concepts,
+        _payload_from_dict,
+    )
+
+    outcomes_by_id = {o.id: o for o in learning_outcomes}
+
+    answered_turns: list[dict] = []
+    open_payload = None
+    open_outcome = None
+
+    for msg in messages:
+        if msg.widget_type != WidgetType.MCQ_SINGLE.value:
+            continue
+        if msg.answer is None and msg.question_payload:
+            # Open (unanswered) question — render as the live interactive card.
+            try:
+                open_payload = _payload_from_dict(_json.loads(msg.question_payload))
+                open_outcome = outcomes_by_id.get(msg.learning_outcome_id)
+            except Exception as e:
+                logger.warning(f"Could not rebuild open payload: {e}")
+        elif msg.answer is not None:
+            turn = _widget_turn_from_qa(msg, outcomes_by_id)
+            if turn:
+                answered_turns.append(turn)
+
+    concept_tracking = build_widget_concept_tracking(
+        db_session, assessment, list(learning_outcomes)
+    )
+
+    return templates.TemplateResponse("assessment_widget.html", {
+        "request": request,
+        "user": current_user,
+        "session": assessment,
+        "lesson": lesson,
+        "learning_outcomes": learning_outcomes,
+        "progress": progress,
+        "concept_tracking": concept_tracking,
+        "answered_turns": answered_turns,
+        "open_payload": open_payload,
+        "open_outcome": open_outcome,
+    })
 
 
 @app.get("/assess/{session_id}", response_class=HTMLResponse)
@@ -294,7 +390,7 @@ async def assessment_interface(
     current_user: User = Depends(require_user),
     db_session: Session = Depends(get_session)
 ):
-    """Assessment chat interface."""
+    """Assessment chat interface / widget interface (per lesson flag)."""
     # Get assessment session
     statement = select(AssessmentSession).where(
         AssessmentSession.session_id == session_id
@@ -322,15 +418,27 @@ async def assessment_interface(
         .where(QuestionAnswer.session_id == assessment.id)
         .order_by(QuestionAnswer.asked_at)
     ).all()
-    
+
     # Get progress
     progress = db_session.exec(
         select(OutcomeProgress)
         .where(OutcomeProgress.session_id == assessment.id)
     ).all()
-    
-    # Build concept tracking for each outcome FIRST (before enriching messages)
-    # Try to get from LangGraph state if available
+
+    # ----- M2 widget branch -----
+    if getattr(lesson, "use_widget_assessment", False):
+        return _render_widget_assessment(
+            request=request,
+            current_user=current_user,
+            db_session=db_session,
+            assessment=assessment,
+            lesson=lesson,
+            learning_outcomes=learning_outcomes,
+            progress=progress,
+            messages=messages,
+        )
+
+    # ----- Existing chat branch -----
     from langgraph.checkpoint.postgres import PostgresSaver
     import json
     import os
@@ -444,6 +552,60 @@ async def submit_answer(
     })
 
 
+@app.post("/assess/{session_id}/widget-answer")
+async def submit_widget_answer(
+    session_id: str,
+    option_id: Annotated[str, Form()],
+    current_user: User = Depends(require_user),
+    db_session: Session = Depends(get_session)
+):
+    """Submit a widget option answer (returns the MCQ feedback fragment)."""
+    statement = select(AssessmentSession).where(
+        AssessmentSession.session_id == session_id
+    )
+    assessment = db_session.exec(statement).first()
+    if not assessment or assessment.user_id != current_user.id:
+        raise HTTPException(status_code=404)
+
+    lesson = db_session.get(Lesson, assessment.lesson_id)
+    if not lesson or not getattr(lesson, "use_widget_assessment", False):
+        raise HTTPException(
+            status_code=400,
+            detail="This endpoint is for widget-based assessments only.",
+        )
+
+    service = WidgetAssessmentService(db_session)
+    try:
+        result = service.process_answer(assessment.id, option_id)
+    except WidgetAssessmentError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    answered_payload = result["answered_payload"]
+    score = result["score_result"]
+    next_payload = result["next_payload"]
+    next_outcome = result["next_outcome"]
+
+    # The answered card header needs an outcome key — prefer the next outcome's
+    # key (continuity) but fall back to the answered payload's concept's
+    # outcome. We don't have the original outcome object here, but the route
+    # only needs its key for display.
+    outcome_key = next_outcome.key if next_outcome else answered_payload.concept_tested
+
+    return templates.TemplateResponse("partials/widgets/mcq_feedback.html", {
+        "request": {},
+        "payload": answered_payload,
+        "selected_option_id": option_id,
+        "is_correct": score.is_correct,
+        "correct_option_id": score.correct_option_id,
+        "explanation": score.explanation,
+        "outcome_key": outcome_key,
+        "next_payload": next_payload,
+        "next_outcome": next_outcome,
+        "session": assessment,
+        "status": result["status"],
+    })
+
+
 @app.post("/assess/{session_id}/sidebar")
 async def update_sidebar(
     session_id: str,
@@ -473,12 +635,25 @@ async def update_sidebar(
         select(OutcomeProgress)
         .where(OutcomeProgress.session_id == assessment.id)
     ).all()
-    
+
+    # M2 widget lessons compute concept tracking from QuestionAnswer rows
+    # (no LangGraph checkpoint).
+    if getattr(lesson, "use_widget_assessment", False):
+        concept_tracking = build_widget_concept_tracking(
+            db_session, assessment, list(learning_outcomes)
+        )
+        return templates.TemplateResponse("partials/sidebar.html", {
+            "request": {},
+            "learning_outcomes": learning_outcomes,
+            "progress": progress,
+            "concept_tracking": concept_tracking
+        })
+
     # Build concept tracking from LangGraph state
     from langgraph.checkpoint.postgres import PostgresSaver
     import json
     import os
-    
+
     concept_tracking = {}
     try:
         db_url = os.getenv("DATABASE_URL", "postgresql://aims_user:aims_password@postgres:5432/aims_db")

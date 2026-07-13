@@ -23,15 +23,9 @@
         {% endif %}
         {% endif %}
         
+        {% set p = progress | selectattr('learning_outcome_id', '==', outcome.id) | first if progress else none %}
+        {% set mastery = (p.mastery_level * 100) | int if p else 0 %}
         <div class="outcome-progress-bar">
-            {% set mastery = 0 %}
-            {% if progress %}
-                {% for p in progress %}
-                    {% if p.learning_outcome_id == outcome.id %}
-                        {% set mastery = (p.mastery_level * 100) | int %}
-                    {% endif %}
-                {% endfor %}
-            {% endif %}
             <div class="progress-fill" style="width: {{ mastery }}%"></div>
         </div>
         <span class="outcome-mastery">{{ mastery }}% Mastery</span>

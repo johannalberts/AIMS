@@ -1,0 +1,35 @@
+{#
+Unanswered MCQ card.
+Context vars: payload (MCQPayload), outcome (LearningOutcome), session (AssessmentSession).
+
+The card id is stable ("current-mcq") because at any moment there is only one
+unanswered MCQ on the page — the most recent one. The POST response swaps the
+whole card with: (1) the answered version of THIS question and (2) optionally
+a new unanswered card for the next concept. Reusing the same id on the next
+card keeps the chain going without per-card uniquification.
+#}
+<div class="mcq-card" id="current-mcq">
+    <div class="mcq-card-header">
+        <span class="outcome-key">{{ outcome.key }}</span>
+        {% if payload.concept_tested %}
+        <span class="concept-badge">Targeting: {{ payload.concept_tested }}</span>
+        {% endif %}
+    </div>
+    <div class="mcq-stem">{{ payload.stem }}</div>
+    <form
+        class="mcq-options"
+        hx-post="/assess/{{ session.session_id }}/widget-answer"
+        hx-target="#current-mcq"
+        hx-swap="outerHTML"
+        hx-disabled-elt="button[type=submit]"
+        hx-on::after-request="if(event.detail.successful){ htmx.ajax('POST','/assess/{{ session.session_id }}/sidebar',{target:'#assessment-sidebar',swap:'innerHTML'}); }"
+    >
+        {% for opt in payload.options %}
+        <label class="mcq-option">
+            <input type="radio" name="option_id" value="{{ opt.id }}" required>
+            <span class="mcq-option-text">{{ opt.text }}</span>
+        </label>
+        {% endfor %}
+        <button type="submit" class="btn btn-primary mcq-submit">Submit answer</button>
+    </form>
+</div>

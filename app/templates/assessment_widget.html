@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+
+{% block title %}Assessment: {{ lesson.title }} - AIMS{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="breadcrumb">
+        <a href="/dashboard">Dashboard</a> / <a href="/course/{{ lesson.course_id }}">Course</a> / Assessment
+    </div>
+
+    <div class="assessment-container">
+        <aside class="assessment-sidebar" id="assessment-sidebar">
+            {% include "partials/sidebar.html" %}
+        </aside>
+
+        <div class="assessment-main">
+            <div class="lesson-header">
+                <h1>{{ lesson.title }}</h1>
+                <p>{{ lesson.topic }}</p>
+            </div>
+
+            <div class="chat-container" id="chatContainer">
+                <div class="chat-messages" id="chatMessages">
+                    {% if session.status == "completed" %}
+                    <div class="message system">
+                        <div class="message-content">
+                            🎉 <strong>Assessment complete.</strong>
+                        </div>
+                    </div>
+                    {% endif %}
+
+                    {# Render previously-answered MCQs as read-only cards. #}
+                    {% for turn in answered_turns %}
+                        {% with
+                            payload=turn.payload,
+                            selected_option_id=turn.selected_option_id,
+                            is_correct=turn.is_correct,
+                            correct_option_id=turn.correct_option_id,
+                            explanation=turn.explanation,
+                            outcome_key=turn.outcome_key
+                        %}
+                            {% include "partials/widgets/mcq_answered.html" %}
+                        {% endwith %}
+                    {% endfor %}
+
+                    {# Render the current open question as an interactive card. #}
+                    {% if open_payload and open_outcome and session.status != "completed" %}
+                        {% with payload=open_payload, outcome=open_outcome, session=session %}
+                            {% include "partials/widgets/mcq_unanswered.html" %}
+                        {% endwith %}
+                    {% elif session.status == "completed" %}
+                        <div class="mcq-card mcq-completion">
+                            <h2>🎉 Assessment complete!</h2>
+                            <p>You've been asked about every concept in this lesson.</p>
+                            <a href="/dashboard" class="btn btn-primary">Return to dashboard</a>
+                        </div>
+                    {% endif %}
+
+                    {# Anchor for any future out-of-band swaps. #}
+                    <div id="newMessages"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/assessment.js"></script>
+{% endblock %}
