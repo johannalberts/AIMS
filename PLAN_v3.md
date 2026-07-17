@@ -192,8 +192,17 @@ After **K** failed attempts on the *same widget type* for a concept:
 2. After the escalation cap is reached, flag the concept as "needs review"
    rather than looping indefinitely.
 
-Open: what the terminal "needs review" state does — block advancement, allow
-advance with a flag, or notify a teacher. To be decided during M4.
+**Decided during M4** (implemented in `widget_assessment.py`):
+- Ladder: `STEP_DOWN_THRESHOLD = 2`, `MAX_FAILED_ATTEMPTS_PER_CONCEPT = 3`.
+  Wrong #1 → re-teach + fresh full-form MCQ. Wrong #2 → re-teach + stepped-down
+  **2-option MCQ** (the "MCQ with fewer options" rung — chosen so the ladder
+  ships before M5's second widget type; enforced by a judge rule plus a
+  deterministic distractor trim in the generator, not just the prompt).
+  Wrong #3 → cap.
+- Terminal "needs review" behavior: **advance with a persistent flag** (never
+  block the learner, §13). The flag is persisted as a `needs_review` audit row
+  (same pattern as `re_teach`), surfaced as a 🚩 badge in the sidebar and
+  listed on the completion card. Teacher notification is out of scope.
 
 ## 10. Data model changes
 
@@ -235,24 +244,36 @@ Still to be confirmed by the user (captured here so the doc is self-contained):
   explanation/coding outcomes.
 - **Content sourcing** — recommendation is RAG when chunks exist, outcome-only
   fallback (§7).
-- **Terminal "needs review" state behavior** (§9).
+- ~~**Terminal "needs review" state behavior** (§9)~~ — **resolved in M4**:
+  advance with a persistent flag (sidebar badge + completion-card listing),
+  persisted as a `needs_review` audit row.
 
 ## 12. Sequencing / milestones
 
-- **M1 — Structured payload schema for MCQ + judge + deterministic scorer.**
+- **M1 — Structured payload schema for MCQ + judge + deterministic scorer.** ✅
   No UI yet; prove the contract via tests. Exit criteria: a test can call
   `generate_question` → `judge` → `assess_answer` and assert a correct and
   incorrect answer score correctly.
+  *(Done — `scripts/test_m1_mcq_contract.py`, 25 checks.)*
 - **M2 — MCQ renderer partial + HTMX round-trip + new `LessonState` wired
-  end-to-end**, replacing the chat path for one test lesson. Exit criteria: a
+  end-to-end**, replacing the chat path for one test lesson. ✅ Exit criteria: a
   learner can complete a full MCQ-based assessment for a single lesson in the
   browser.
+  *(Done — `scripts/test_m2_widget_assessment.py`, 26 checks. Implemented as
+  the DB-derived `WidgetAssessmentService` rather than a LangGraph LessonState
+  — same contract, survives restarts.)*
 - **M3 — Restore `re_teach` / `rephrase` as real nodes** with regeneration
-  driven by `questions_asked` tracking. Exit criteria: a wrong answer triggers
+  driven by `questions_asked` tracking. ✅ Exit criteria: a wrong answer triggers
   a teach panel then a *different* MCQ on the same concept.
-- **M4 — Escalation valve + attempt caps.** Exit criteria: after K failures on
+  *(Done — `scripts/test_m3_remediation.py`, 37 checks. Only `re_teach` was
+  restored: single-answer MCQ is binary, so the 20–80% `rephrase` band never
+  fires; it returns with partial-credit widget types, M5+.)*
+- **M4 — Escalation valve + attempt caps.** ✅ Exit criteria: after K failures on
   MCQ, the system steps down to an easier type; after the cap, the concept is
   flagged.
+  *(Done — `scripts/test_m4_escalation.py`, 46 checks. Ladder: step down to the
+  2-option MCQ at 2 failures, cap + `needs_review` flag at 3 — see §9 for the
+  confirmed decisions.)*
 - **M5 — Second widget type** (whichever the user picks) — validate the pattern
   generalizes. Exit criteria: two widget types coexist in one assessment,
   selected by `select_widget_type`.

@@ -12,6 +12,7 @@ Context vars (a `remediation` dict):
   outcome_description  — str
   explanation          — str (may be empty)
   hint                 — str
+  step_down            — bool (M4: next question is the easier stepped-down form)
 #}
 <div class="mcq-card teach-panel">
     <div class="mcq-card-header">
@@ -36,5 +37,10 @@ Context vars (a `remediation` dict):
             <span class="teach-panel-label">Hint:</span>
             <span>{{ remediation.hint }}</span>
         </div>
+        {% if remediation.step_down %}
+        <p class="teach-panel-step-down">
+            The next question will be a simpler one to help you lock in the basics. 💪
+        </p>
+        {% endif %}
     </div>
 </div>

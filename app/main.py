@@ -351,6 +351,7 @@ def _render_widget_assessment(
     from app.services.widget_assessment import (
         _parse_key_concepts,
         _payload_from_dict,
+        load_needs_review_concepts,
     )
 
     outcomes_by_id = {o.id: o for o in learning_outcomes}
@@ -387,6 +388,7 @@ def _render_widget_assessment(
     concept_tracking = build_widget_concept_tracking(
         db_session, assessment, list(learning_outcomes)
     )
+    needs_review_concepts = load_needs_review_concepts(db_session, assessment)
 
     return templates.TemplateResponse("assessment_widget.html", {
         "request": request,
@@ -396,6 +398,7 @@ def _render_widget_assessment(
         "learning_outcomes": learning_outcomes,
         "progress": progress,
         "concept_tracking": concept_tracking,
+        "needs_review_concepts": needs_review_concepts,
         "timeline": timeline,
         "open_payload": open_payload,
         "open_outcome": open_outcome,
@@ -489,7 +492,9 @@ async def assessment_interface(
                     concept_tracking[outcome.id] = {
                         "all": key_concepts,
                         "covered": covered,
-                        "remaining": [c for c in key_concepts if c not in covered]
+                        "remaining": [c for c in key_concepts if c not in covered],
+                        # Chat path has no escalation (M4 is widget-only).
+                        "flagged": []
                     }
     except Exception as e:
         # If checkpoint retrieval fails, build from outcome data
@@ -508,7 +513,8 @@ async def assessment_interface(
             concept_tracking[outcome.id] = {
                 "all": key_concepts,
                 "covered": [],
-                "remaining": key_concepts
+                "remaining": key_concepts,
+                "flagged": []
             }
     
     # Now enrich messages (simplified - no concept_info in chat)
@@ -605,6 +611,10 @@ async def submit_widget_answer(
     next_payload = result["next_payload"]
     next_outcome = result["next_outcome"]
 
+    # M4: needs_review flags for the completion card (derived from audit rows).
+    from app.services.widget_assessment import load_needs_review_concepts
+    needs_review_concepts = load_needs_review_concepts(db_session, assessment)
+
     # The answered card header shows the answered question's outcome key (not
     # the next one's), so after a wrong answer the card is labelled with the
     # outcome the learner was just working on.
@@ -627,6 +637,7 @@ async def submit_widget_answer(
         "remediation": result.get("remediation"),
         "escalation_capped": result.get("escalation_capped", False),
         "capped_concept": result.get("capped_concept"),
+        "needs_review_concepts": needs_review_concepts,
     })
 
 
@@ -705,7 +716,9 @@ async def update_sidebar(
                     concept_tracking[outcome.id] = {
                         "all": key_concepts,
                         "covered": covered,
-                        "remaining": [c for c in key_concepts if c not in covered]
+                        "remaining": [c for c in key_concepts if c not in covered],
+                        # Chat path has no escalation (M4 is widget-only).
+                        "flagged": []
                     }
     except Exception as e:
         import logging
@@ -723,7 +736,8 @@ async def update_sidebar(
             concept_tracking[outcome.id] = {
                 "all": key_concepts,
                 "covered": [],
-                "remaining": key_concepts
+                "remaining": key_concepts,
+                "flagged": []
             }
     
     # Return sidebar partial

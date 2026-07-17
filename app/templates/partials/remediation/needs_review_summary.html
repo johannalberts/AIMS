@@ -1,0 +1,21 @@
+{#
+Needs-review summary (M4) — lists concepts that hit the escalation cap and
+were flagged `needs_review` (PLAN_v3.md §9/§11: advance with a persistent
+flag). Rendered inside the completion card, on both the full-page render and
+the HTMX feedback fragment.
+Context vars:
+  needs_review_concepts — list[str] (may be empty/undefined)
+#}
+{% if needs_review_concepts %}
+<div class="needs-review-summary">
+    <span class="needs-review-label">Flagged for review</span>
+    <ul class="needs-review-list">
+        {% for concept in needs_review_concepts %}
+        <li>{{ concept }}</li>
+        {% endfor %}
+    </ul>
+    <p class="needs-review-note">
+        These concepts need another look — they count as not yet mastered.
+    </p>
+</div>
+{% endif %}
