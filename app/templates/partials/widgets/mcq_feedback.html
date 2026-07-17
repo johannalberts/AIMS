@@ -1,11 +1,38 @@
 {#
 Response body for POST /assess/{session_id}/widget-answer.
-Contains: answered card (inline) + completion card or next unanswered card.
+Layout (M3):
+  1. Answered card (inline) for the question the learner just answered.
+  2. If remediation: a teach panel (re_teach) for the missed concept.
+  3. If escalation_capped: a notice that we're moving on with the concept
+     flagged as not-mastered (M3 minimal terminal behavior; §11 open).
+  4. Either a completion card, or the next unanswered MCQ on the same concept
+     (after a wrong answer below the cap) or on the next concept (after a
+     correct answer or a capped advance).
 Context vars:
   payload, selected_option_id, is_correct, correct_option_id, explanation,
-  outcome_key, next_payload, next_outcome, session, status
+  outcome_key (for the answered card),
+  remediation (dict | None), escalation_capped (bool), capped_concept (str | None),
+  next_payload, next_outcome, session, status
 #}
 {% include "partials/widgets/mcq_answered.html" %}
+
+{% if remediation %}
+{% include "partials/remediation/teach_panel.html" %}
+{% endif %}
+
+{% if escalation_capped %}
+<div class="mcq-card mcq-capped">
+    <div class="mcq-card-header">
+        <span class="concept-badge capped-badge">Moving on: {{ capped_concept }}</span>
+    </div>
+    <div class="mcq-capped-body">
+        <p>
+            You've had a few attempts at <strong>{{ capped_concept }}</strong>.
+            We'll flag it for review and move on so you can keep making progress.
+        </p>
+    </div>
+</div>
+{% endif %}
 
 {% if status == "completed" %}
 <div class="mcq-card mcq-completion">

@@ -1,0 +1,40 @@
+{#
+Remediation teach panel — shown after a wrong answer, before the regenerated
+MCQ on the same concept (PLAN_v3.md §8 / §9, M3).
+
+M3 grounding: the panel falls back to the scored MCQ payload's `explanation`
+field plus a templated hint. RAG retrieval into LearningContent is M6 — not
+built here; this partial renders whatever the service put in `remediation`.
+
+Context vars (a `remediation` dict):
+  concept              — str (targeted concept)
+  outcome_key          — str
+  outcome_description  — str
+  explanation          — str (may be empty)
+  hint                 — str
+#}
+<div class="mcq-card teach-panel">
+    <div class="mcq-card-header">
+        <span class="outcome-key">{{ remediation.outcome_key }}</span>
+        <span class="concept-badge teach-panel-badge">Re-teach: {{ remediation.concept }}</span>
+    </div>
+    <div class="teach-panel-body">
+        <p class="teach-panel-intro">
+            That wasn't quite right. Let's review <strong>{{ remediation.concept }}</strong>
+            before trying a fresh question.
+        </p>
+        {% if remediation.outcome_description %}
+        <p class="teach-panel-outcome">{{ remediation.outcome_description }}</p>
+        {% endif %}
+        {% if remediation.explanation %}
+        <div class="teach-panel-explanation">
+            <span class="teach-panel-label">Why the correct answer was right:</span>
+            <span>{{ remediation.explanation }}</span>
+        </div>
+        {% endif %}
+        <div class="teach-panel-hint">
+            <span class="teach-panel-label">Hint:</span>
+            <span>{{ remediation.hint }}</span>
+        </div>
+    </div>
+</div>

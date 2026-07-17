@@ -1048,3 +1048,71 @@ body {
 
 .mcq-completion h2 { margin-top: 0; margin-bottom: 0.5rem; }
 .mcq-completion p  { margin-bottom: 1rem; color: var(--text-secondary); }
+
+/* ====================================================================== */
+/* M3: Remediation teach panel + escalation-capped notice                  */
+/* ====================================================================== */
+
+.mcq-card.teach-panel {
+    border-left: 4px solid var(--primary-color, #3b82f6);
+    background: var(--bg-secondary, var(--surface));
+}
+
+.teach-panel-badge {
+    background: rgba(59, 130, 246, 0.1);
+    color: var(--primary-color, #3b82f6);
+    border-color: var(--primary-color, #3b82f6);
+}
+
+.teach-panel-body { display: flex; flex-direction: column; gap: 0.6rem; }
+
+.teach-panel-intro {
+    margin: 0;
+    font-size: 1rem;
+    line-height: 1.45;
+    color: var(--text-primary, currentColor);
+}
+
+.teach-panel-outcome {
+    margin: 0;
+    font-size: 0.9rem;
+    color: var(--text-secondary, currentColor);
+    font-style: italic;
+}
+
+.teach-panel-explanation,
+.teach-panel-hint {
+    font-size: 0.92rem;
+    line-height: 1.45;
+    padding: 0.5rem 0.75rem;
+    border-radius: 0.5rem;
+    border: 1px solid var(--border);
+    background: var(--surface);
+}
+
+.teach-panel-label {
+    display: block;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 0.2rem;
+}
+
+.mcq-card.mcq-capped {
+    border-left: 4px solid var(--warning-color, #f59e0b);
+    background: rgba(245, 158, 11, 0.05);
+}
+
+.capped-badge {
+    background: rgba(245, 158, 11, 0.1);
+    color: var(--warning-color, #f59e0b);
+    border-color: var(--warning-color, #f59e0b);
+}
+
+.mcq-capped-body p {
+    margin: 0;
+    color: var(--text-secondary, currentColor);
+    line-height: 1.45;
+}

@@ -1,5 +1,5 @@
 """
-Widget-based assessment service — M2.
+Widget-based assessment service — M2 + M3 remediation.
 
 Per-lesson path for lessons with `use_widget_assessment = True`. Replaces the
 v2 chat loop (AIMSGraph) with the M1 structured-payload pipeline:
@@ -8,16 +8,23 @@ v2 chat loop (AIMSGraph) with the M1 structured-payload pipeline:
         -> judge_or_regenerate -> persist QuestionAnswer(question_payload)
     on submit:
         score_answer -> persist QuestionAnswer(response_payload, score)
-        -> advance concept / outcome -> next generate or done
+        -> (M3) route: wrong-uncapped → re_teach + regenerate on SAME concept
+                  wrong-capped    → flag and advance
+                  correct         → advance to next concept / outcome
 
 State is reconstructed from the database on every turn; there is no in-memory
 state to thread across requests and no LangGraph checkpointer involved.
 Concept-level progress is derived from answered QuestionAnswer rows for the
 session, so it stays correct across server restarts.
 
-M2 completes a single full pass over all concepts per outcome. Remediation
-(re-teach on a wrong answer) lands in M3 — for M2 a wrong answer is scored,
-the explanation is shown, and we advance to the next concept.
+M2 completes a single full pass over all concepts per outcome. M3 restores the
+remediation loop: a wrong answer (single MCQ → 0 % → re_teach band per
+PLAN_v3.md §9) triggers a teach panel and a regenerated MCQ on the *same*
+concept (driven by the M1 `questions_asked` dedup, now actually invoked). After
+`MAX_FAILED_ATTEMPTS_PER_CONCEPT` wrong answers on the same concept, the
+escalation cap fires: we stop regenerating, leave the concept uncovered (so
+OutcomeProgress reflects not-mastered), and advance. The terminal "needs
+review" UX is deferred to M4 (§11) — for M3 we simply advance.
 """
 from __future__ import annotations
 
@@ -99,6 +106,13 @@ class WidgetAssessmentService:
 
     MAX_GENERATE_ATTEMPTS = 3
 
+    # M3 (PLAN_v3.md §9 "Escalation"): after this many wrong answers on the
+    # same concept, stop regenerating and advance with the concept flagged as
+    # not-mastered. Surfaced as a named constant so it is easy to tune; the
+    # terminal "needs review" UX is an open question (§11) and is deferred to
+    # M4 — for M3 we simply advance and let OutcomeProgress reflect the gap.
+    MAX_FAILED_ATTEMPTS_PER_CONCEPT = 3
+
     def __init__(self, db_session: Session, judge: Optional[Judge] = None):
         self.db_session = db_session
         self.judge = judge or Judge()
@@ -131,7 +145,17 @@ class WidgetAssessmentService:
     def process_answer(
         self, assessment_id: int, selected_option_id: str
     ) -> Dict[str, Any]:
-        """Score the learner's option, advance, and return the next payload."""
+        """Score the learner's option, route, and return the next payload.
+
+        M3 routing (PLAN_v3.md §3 / §9):
+        - Correct → advance to the next pending concept/outcome (M2 behavior).
+        - Wrong and below the escalation cap → render a teach panel, then
+          regenerate a fresh MCQ on the *same* concept (different stem /
+          distractors, driven by `questions_asked` dedup plumbing from M1).
+        - Wrong and at/above the cap → stop regenerating, flag the concept as
+          not-mastered (it stays uncovered in OutcomeProgress), and advance to
+          the next pending concept/outcome. No infinite loop.
+        """
         assessment = self._load_assessment(assessment_id)
         outcomes = self._load_outcomes(assessment)
 
@@ -151,8 +175,52 @@ class WidgetAssessmentService:
 
         self._record_answer(open_qa, response, result)
 
-        # Re-pick the next concept/outcome after scoring.
-        next_target = self._next_target(assessment, outcomes)
+        answered_outcome = next(
+            (o for o in outcomes if o.id == open_qa.learning_outcome_id), None
+        )
+
+        remediation: Optional[Dict[str, Any]] = None
+        escalation_capped = False
+        capped_concept: Optional[str] = None
+
+        concept = open_qa.concept_tested or payload.concept_tested
+        wrong_count = self._wrong_count_for_concept(
+            assessment, open_qa.learning_outcome_id, concept
+        )
+
+        if result.is_correct:
+            # M2 path: advance to the next pending concept/outcome.
+            next_target = self._next_target(assessment, outcomes)
+        else:
+            # Wrong answer — single MCQ is binary, so this is the re_teach
+            # band (< 20 % per PLAN_v3.md §9). rephrase (20–80 %) only becomes
+            # relevant once partial-credit widget types land (M5+).
+            if wrong_count < self.MAX_FAILED_ATTEMPTS_PER_CONCEPT:
+                remediation = self._build_remediation(
+                    answered_outcome, concept, payload
+                )
+                self._persist_re_teach(
+                    assessment, open_qa.learning_outcome_id, concept, remediation
+                )
+                # Stay on the same concept — narrow target so the generator's
+                # questions_asked dedup produces a genuinely different MCQ.
+                if answered_outcome is None:
+                    raise WidgetAssessmentError(
+                        "Answered question's outcome could not be resolved; "
+                        "cannot remediate."
+                    )
+                next_target = _Target(outcome=answered_outcome, concept=concept)
+            else:
+                # Escalation cap reached: stop regenerating, flag and advance.
+                escalation_capped = True
+                capped_concept = concept
+                logger.info(
+                    f"Escalation cap reached for concept '{concept}' "
+                    f"(wrong_attempts={wrong_count}); advancing with concept "
+                    f"flagged as not-mastered."
+                )
+                next_target = self._next_target(assessment, outcomes)
+
         next_payload: Optional[QuestionPayload] = None
         next_outcome: Optional[LearningOutcome] = None
         if next_target is None:
@@ -171,10 +239,14 @@ class WidgetAssessmentService:
         return {
             "score_result": result,
             "answered_payload": payload,
+            "answered_outcome": answered_outcome,
             "selected_option_id": selected_option_id,
             "next_payload": next_payload,
             "next_outcome": next_outcome,
             "status": assessment.status,
+            "remediation": remediation,
+            "escalation_capped": escalation_capped,
+            "capped_concept": capped_concept,
         }
 
     # ------------------------------------------------------------------
@@ -331,35 +403,143 @@ class WidgetAssessmentService:
     def _next_target(
         self, assessment: AssessmentSession, outcomes: List[LearningOutcome]
     ) -> Optional["_Target"]:
-        """Find the next (outcome, concept) to MCQ about, or None if done."""
+        """Find the next (outcome, concept) to MCQ about, or None if done.
+
+        M3 routing (PLAN_v3.md §3 / §9): a concept is "pending" if it is not
+        yet covered AND its wrong-answer count is below the escalation cap.
+        Wrong-but-uncapped concepts are prioritised ahead of unattempted ones
+        so a wrong answer is re-asked on the *same* concept before the loop
+        moves on. A concept at/above the cap is no longer pending → skipped,
+        which advances the learner with the concept flagged as not-mastered.
+        """
         qas = self.db_session.exec(
             select(QuestionAnswer)
             .where(QuestionAnswer.session_id == assessment.id)
             .where(QuestionAnswer.widget_type == WidgetType.MCQ_SINGLE.value)
         ).all()
 
-        # Build per-outcome attempted/covered sets from answered QAs only.
-        per_outcome: Dict[int, Tuple[set[str], set[str]]] = {}
+        # Per-outcome: attempted set, covered (correct) set, wrong counts.
+        per_outcome: Dict[int, Dict[str, Any]] = {}
         for qa in qas:
             bucket = per_outcome.setdefault(
-                qa.learning_outcome_id, (set(), set())
+                qa.learning_outcome_id,
+                {"attempted": set(), "covered": set(), "wrong": {}},
             )
             if qa.answer is None or not qa.concept_tested:
                 continue
-            bucket[0].add(qa.concept_tested)
+            bucket["attempted"].add(qa.concept_tested)
             if qa.is_correct:
-                bucket[1].add(qa.concept_tested)
+                bucket["covered"].add(qa.concept_tested)
+            else:
+                bucket["wrong"][qa.concept_tested] = (
+                    bucket["wrong"].get(qa.concept_tested, 0) + 1
+                )
 
+        cap = self.MAX_FAILED_ATTEMPTS_PER_CONCEPT
         for outcome in outcomes:
             concepts = _parse_key_concepts(outcome)
-            attempted, _covered = per_outcome.get(outcome.id, (set(), set()))
             if not concepts:
                 continue
+            state = per_outcome.get(
+                outcome.id, {"attempted": set(), "covered": set(), "wrong": {}}
+            )
+            covered = state["covered"]
+            wrong = state["wrong"]
+            attempted = state["attempted"]
+            # Wrong-but-uncapped concepts first — these are the in-progress
+            # re-asks. Preserve the outcome's declared concept order.
+            wrong_uncapped = [
+                c for c in concepts
+                if c in wrong and c not in covered and wrong[c] < cap
+            ]
+            if wrong_uncapped:
+                return _Target(outcome=outcome, concept=wrong_uncapped[0])
             unattempted = [c for c in concepts if c not in attempted]
             if unattempted:
                 return _Target(outcome=outcome, concept=unattempted[0])
-        # All outcomes have all concepts attempted: assessment is complete.
+        # All outcomes have all concepts covered or capped: assessment is done.
         return None
+
+    def _wrong_count_for_concept(
+        self,
+        assessment: AssessmentSession,
+        outcome_id: int,
+        concept: Optional[str],
+    ) -> int:
+        """Count wrong MCQ answers for a (outcome, concept) so far this session.
+
+        Includes the answer just recorded (caller invokes this after
+        `_record_answer`), so the returned count is the total wrong attempts
+        on this concept up to and including the current turn.
+        """
+        if not concept:
+            return 0
+        rows = self.db_session.exec(
+            select(QuestionAnswer)
+            .where(QuestionAnswer.session_id == assessment.id)
+            .where(QuestionAnswer.learning_outcome_id == outcome_id)
+            .where(QuestionAnswer.concept_tested == concept)
+            .where(QuestionAnswer.widget_type == WidgetType.MCQ_SINGLE.value)
+            .where(QuestionAnswer.answer != None)
+            .where(QuestionAnswer.is_correct == False)
+        ).all()
+        return len(list(rows))
+
+    def _build_remediation(
+        self,
+        outcome: Optional[LearningOutcome],
+        concept: str,
+        scored_payload: QuestionPayload,
+    ) -> Dict[str, Any]:
+        """Build the teach-panel payload for a wrong answer.
+
+        M3 fallback (PLAN_v3.md §8 / §9): the teach panel is grounded in the
+        scored payload's explanation field (already on MCQPayload) plus a
+        templated hint. RAG retrieval into LearningContent is M6 — not built
+        here.
+        """
+        explanation = getattr(scored_payload, "explanation", None) or ""
+        outcome_desc = outcome.description if outcome else ""
+        return {
+            "concept": concept,
+            "outcome_key": outcome.key if outcome else "",
+            "outcome_description": outcome_desc,
+            "explanation": explanation,
+            "hint": (
+                f"Take another look at '{concept}' — focus on why the correct "
+                f"option is the one that demonstrably tests this concept, "
+                f"then try a fresh question from a different angle."
+            ),
+        }
+
+    def _persist_re_teach(
+        self,
+        assessment: AssessmentSession,
+        outcome_id: int,
+        concept: str,
+        remediation: Dict[str, Any],
+    ) -> QuestionAnswer:
+        """Persist a non-interactive `re_teach` event row for the audit trail.
+
+        Stored with `event_type="re_teach"`, `widget_type=None`, `answer=None`
+        so it is never mistaken for an open MCQ by `_load_open_question` /
+        `_next_target` (both filter on `widget_type == mcq_single` or
+        `answer != None`). The rendered teach-panel content is serialized into
+        `question_payload` so the page can be reconstructed on reload.
+        """
+        qa = QuestionAnswer(
+            session_id=assessment.id,
+            learning_outcome_id=outcome_id,
+            question=f"Re-teach: {concept}",
+            event_type="re_teach",
+            widget_type=None,
+            concept_tested=concept,
+            question_payload=json.dumps(remediation),
+        )
+        self.db_session.add(qa)
+        self.db_session.commit()
+        self.db_session.refresh(qa)
+        return qa
 
     # ------------------------------------------------------------------
     # Generation
