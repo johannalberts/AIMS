@@ -59,6 +59,11 @@ class GenerationContext(BaseModel):
     failed_attempts: int = 0
     # Widget types already used for this concept (drives escalation):
     widget_history: List[WidgetType] = Field(default_factory=list)
+    # M4 escalation step-down (PLAN_v3.md §9): when set, the generator must
+    # produce an MCQ with exactly this many options — the stepped-down easier
+    # form used after repeated failures at full difficulty. None = default
+    # difficulty (3-4 options for MCQ).
+    target_option_count: Optional[int] = None
 
 
 class AskedQuestionRef(BaseModel):
@@ -85,6 +90,10 @@ class JudgeContext(BaseModel):
     outcome_key: str
     valid_concepts: List[str]
     questions_asked: List[AskedQuestionRef] = Field(default_factory=list)
+    # M4 escalation step-down: when set, the rules validator requires the MCQ
+    # to have exactly this many options, so the stepped-down easier form is
+    # enforced rather than advisory. Mirrors GenerationContext.target_option_count.
+    expected_option_count: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------

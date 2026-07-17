@@ -1,17 +1,19 @@
 {#
 Response body for POST /assess/{session_id}/widget-answer.
-Layout (M3):
+Layout (M3 + M4):
   1. Answered card (inline) for the question the learner just answered.
   2. If remediation: a teach panel (re_teach) for the missed concept.
   3. If escalation_capped: a notice that we're moving on with the concept
-     flagged as not-mastered (M3 minimal terminal behavior; §11 open).
-  4. Either a completion card, or the next unanswered MCQ on the same concept
-     (after a wrong answer below the cap) or on the next concept (after a
-     correct answer or a capped advance).
+     flagged needs_review (M4: flag persisted as an audit row).
+  4. Either a completion card (listing any needs_review concepts, M4), or the
+     next unanswered MCQ on the same concept (after a wrong answer below the
+     cap — the easier stepped-down form once the step-down threshold is
+     reached) or on the next concept (after a correct answer or capped advance).
 Context vars:
   payload, selected_option_id, is_correct, correct_option_id, explanation,
   outcome_key (for the answered card),
   remediation (dict | None), escalation_capped (bool), capped_concept (str | None),
+  needs_review_concepts (list[str]),
   next_payload, next_outcome, session, status
 #}
 {% include "partials/widgets/mcq_answered.html" %}
@@ -38,6 +40,7 @@ Context vars:
 <div class="mcq-card mcq-completion">
     <h2>🎉 Assessment complete!</h2>
     <p>You've been asked about every concept in this lesson.</p>
+    {% include "partials/remediation/needs_review_summary.html" %}
     <a href="/dashboard" class="btn btn-primary">Return to dashboard</a>
 </div>
 {% elif next_payload and next_outcome %}

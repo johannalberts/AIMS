@@ -1,5 +1,5 @@
 """
-Widget-based assessment service — M2 + M3 remediation.
+Widget-based assessment service — M2 + M3 remediation + M4 escalation.
 
 Per-lesson path for lessons with `use_widget_assessment = True`. Replaces the
 v2 chat loop (AIMSGraph) with the M1 structured-payload pipeline:
@@ -8,8 +8,8 @@ v2 chat loop (AIMSGraph) with the M1 structured-payload pipeline:
         -> judge_or_regenerate -> persist QuestionAnswer(question_payload)
     on submit:
         score_answer -> persist QuestionAnswer(response_payload, score)
-        -> (M3) route: wrong-uncapped → re_teach + regenerate on SAME concept
-                  wrong-capped    → flag and advance
+        -> route: wrong-uncapped → re_teach + regenerate on SAME concept
+                  wrong-capped    → flag needs_review and advance
                   correct         → advance to next concept / outcome
 
 State is reconstructed from the database on every turn; there is no in-memory
@@ -20,11 +20,20 @@ session, so it stays correct across server restarts.
 M2 completes a single full pass over all concepts per outcome. M3 restores the
 remediation loop: a wrong answer (single MCQ → 0 % → re_teach band per
 PLAN_v3.md §9) triggers a teach panel and a regenerated MCQ on the *same*
-concept (driven by the M1 `questions_asked` dedup, now actually invoked). After
-`MAX_FAILED_ATTEMPTS_PER_CONCEPT` wrong answers on the same concept, the
-escalation cap fires: we stop regenerating, leave the concept uncovered (so
-OutcomeProgress reflects not-mastered), and advance. The terminal "needs
-review" UX is deferred to M4 (§11) — for M3 we simply advance.
+concept (driven by the M1 `questions_asked` dedup, now actually invoked).
+
+M4 adds the escalation ladder (PLAN_v3.md §9, decisions confirmed with the
+user):
+- After `STEP_DOWN_THRESHOLD` wrong answers on a concept, the MCQ steps down
+  to its easier 2-option form ("MCQ with fewer options" — the true/false
+  widget-type step-down is M5). Enforced via GenerationContext.target_option_count
+  + a judge rule (JudgeContext.expected_option_count).
+- After `MAX_FAILED_ATTEMPTS_PER_CONCEPT` wrong answers, the escalation cap
+  fires: the concept is flagged `needs_review` (persisted as an audit event
+  row and surfaced on the completion screen + sidebar), left uncovered so
+  OutcomeProgress reflects not-mastered, and the learner advances. The
+  terminal behavior chosen for §11's open question is "advance with a
+  persistent flag" — never trap the learner (§13).
 """
 from __future__ import annotations
 
@@ -106,11 +115,12 @@ class WidgetAssessmentService:
 
     MAX_GENERATE_ATTEMPTS = 3
 
-    # M3 (PLAN_v3.md §9 "Escalation"): after this many wrong answers on the
-    # same concept, stop regenerating and advance with the concept flagged as
-    # not-mastered. Surfaced as a named constant so it is easy to tune; the
-    # terminal "needs review" UX is an open question (§11) and is deferred to
-    # M4 — for M3 we simply advance and let OutcomeProgress reflect the gap.
+    # M4 escalation ladder (PLAN_v3.md §9, thresholds confirmed with the user):
+    # - After STEP_DOWN_THRESHOLD wrong answers on the same concept, the
+    #   regenerated MCQ steps down to its easier 2-option form.
+    # - After MAX_FAILED_ATTEMPTS_PER_CONCEPT wrong answers, stop regenerating,
+    #   flag the concept `needs_review`, and advance.
+    STEP_DOWN_THRESHOLD = 2
     MAX_FAILED_ATTEMPTS_PER_CONCEPT = 3
 
     def __init__(self, db_session: Session, judge: Optional[Judge] = None):
@@ -196,8 +206,11 @@ class WidgetAssessmentService:
             # band (< 20 % per PLAN_v3.md §9). rephrase (20–80 %) only becomes
             # relevant once partial-credit widget types land (M5+).
             if wrong_count < self.MAX_FAILED_ATTEMPTS_PER_CONCEPT:
+                # M4 step-down: at/above STEP_DOWN_THRESHOLD the regenerated
+                # MCQ drops to its easier 2-option form (see `_generate`).
+                step_down = wrong_count >= self.STEP_DOWN_THRESHOLD
                 remediation = self._build_remediation(
-                    answered_outcome, concept, payload
+                    answered_outcome, concept, payload, step_down=step_down
                 )
                 self._persist_re_teach(
                     assessment, open_qa.learning_outcome_id, concept, remediation
@@ -211,13 +224,18 @@ class WidgetAssessmentService:
                     )
                 next_target = _Target(outcome=answered_outcome, concept=concept)
             else:
-                # Escalation cap reached: stop regenerating, flag and advance.
+                # Escalation cap reached: stop regenerating, flag the concept
+                # needs_review (persisted audit row, surfaced on the completion
+                # screen + sidebar), and advance. Never trap the learner (§13).
                 escalation_capped = True
                 capped_concept = concept
+                self._persist_needs_review(
+                    assessment, open_qa.learning_outcome_id, concept
+                )
                 logger.info(
                     f"Escalation cap reached for concept '{concept}' "
-                    f"(wrong_attempts={wrong_count}); advancing with concept "
-                    f"flagged as not-mastered."
+                    f"(wrong_attempts={wrong_count}); flagged needs_review, "
+                    f"advancing."
                 )
                 next_target = self._next_target(assessment, outcomes)
 
@@ -490,6 +508,7 @@ class WidgetAssessmentService:
         outcome: Optional[LearningOutcome],
         concept: str,
         scored_payload: QuestionPayload,
+        step_down: bool = False,
     ) -> Dict[str, Any]:
         """Build the teach-panel payload for a wrong answer.
 
@@ -497,6 +516,9 @@ class WidgetAssessmentService:
         scored payload's explanation field (already on MCQPayload) plus a
         templated hint. RAG retrieval into LearningContent is M6 — not built
         here.
+
+        `step_down` (M4) tells the panel the next question will be the easier
+        stepped-down form, so the UI can set expectations.
         """
         explanation = getattr(scored_payload, "explanation", None) or ""
         outcome_desc = outcome.description if outcome else ""
@@ -510,7 +532,34 @@ class WidgetAssessmentService:
                 f"option is the one that demonstrably tests this concept, "
                 f"then try a fresh question from a different angle."
             ),
+            "step_down": step_down,
         }
+
+    def _persist_needs_review(
+        self,
+        assessment: AssessmentSession,
+        outcome_id: int,
+        concept: str,
+    ) -> QuestionAnswer:
+        """Persist a `needs_review` event row when the escalation cap fires.
+
+        M4 terminal behavior (PLAN_v3.md §11, decided): advance with a
+        persistent flag. Same audit-row pattern as `_persist_re_teach` —
+        `widget_type=None`, `answer=None`, so it is invisible to
+        `_load_open_question` / `_next_target` and derivable on reload.
+        """
+        qa = QuestionAnswer(
+            session_id=assessment.id,
+            learning_outcome_id=outcome_id,
+            question=f"Needs review: {concept}",
+            event_type="needs_review",
+            widget_type=None,
+            concept_tested=concept,
+        )
+        self.db_session.add(qa)
+        self.db_session.commit()
+        self.db_session.refresh(qa)
+        return qa
 
     def _persist_re_teach(
         self,
@@ -555,14 +604,18 @@ class WidgetAssessmentService:
         # this concept (so the generator avoids reuse).
         asked_refs = self._asked_refs_for(assessment, target.outcome, target.concept)
 
-        # Reuse OutcomeProgress' attempts count for the failed_attempts hint;
-        # it's a coarse signal but enough for M2.
-        progress = self.db_session.exec(
-            select(OutcomeProgress).where(
-                OutcomeProgress.session_id == assessment.id
-            ).where(OutcomeProgress.learning_outcome_id == target.outcome.id)
-        ).first()
-        failed = progress.attempts if progress else 0
+        # Concept-level wrong count drives both the failed_attempts prompt
+        # hint and the M4 escalation step-down.
+        wrong_count = self._wrong_count_for_concept(
+            assessment, target.outcome.id, target.concept
+        )
+
+        # M4 escalation ladder (PLAN_v3.md §9): once the learner has failed
+        # this concept STEP_DOWN_THRESHOLD times, regenerate in the easier
+        # 2-option form. Enforced by a judge rule, not just the prompt.
+        target_option_count = (
+            2 if wrong_count >= self.STEP_DOWN_THRESHOLD else None
+        )
 
         ctx = GenerationContext(
             topic=assessment.lesson.topic,
@@ -572,8 +625,9 @@ class WidgetAssessmentService:
             targeted_concept=target.concept,
             concepts_covered=[],
             questions_asked=asked_refs,
-            failed_attempts=failed,
+            failed_attempts=wrong_count,
             widget_history=[],
+            target_option_count=target_option_count,
         )
 
         gen_fn = make_generator(ctx)
@@ -581,6 +635,7 @@ class WidgetAssessmentService:
             outcome_key=target.outcome.key,
             valid_concepts=_parse_key_concepts(target.outcome),
             questions_asked=asked_refs,
+            expected_option_count=target_option_count,
         )
         try:
             payload, verdict, _attempts = judge_or_regenerate(
@@ -674,11 +729,34 @@ def _answered_qas(db_session: Session, assessment: AssessmentSession) -> List[Qu
     ).all()
 
 
+def load_needs_review_concepts(
+    db_session: Session, assessment: AssessmentSession
+) -> List[str]:
+    """Concepts flagged `needs_review` this session (M4), in the order they
+    were flagged. Derived from the needs_review audit rows so the completion
+    screen stays correct across reloads."""
+    rows = db_session.exec(
+        select(QuestionAnswer)
+        .where(QuestionAnswer.session_id == assessment.id)
+        .where(QuestionAnswer.event_type == "needs_review")
+        .order_by(QuestionAnswer.asked_at)
+    ).all()
+    seen: set[str] = set()
+    concepts: List[str] = []
+    for row in rows:
+        if row.concept_tested and row.concept_tested not in seen:
+            seen.add(row.concept_tested)
+            concepts.append(row.concept_tested)
+    return concepts
+
+
 def build_concept_tracking(
     db_session: Session, assessment: AssessmentSession, outcomes: List[LearningOutcome]
 ) -> Dict[int, Dict[str, List[str]]]:
     """Sidebar helper: build the same dict shape main.py already passes to the
-    sidebar template — per outcome {all, covered, remaining} key concepts."""
+    sidebar template — per outcome {all, covered, remaining, flagged} key
+    concepts. `flagged` (M4) holds concepts that hit the escalation cap and
+    were marked needs_review."""
     qas = _answered_qas(db_session, assessment)
     covered_by_outcome: Dict[int, set[str]] = {}
     for qa in qas:
@@ -688,14 +766,28 @@ def build_concept_tracking(
         if qa.is_correct:
             covered_by_outcome[qa.learning_outcome_id].add(qa.concept_tested)
 
+    review_rows = db_session.exec(
+        select(QuestionAnswer)
+        .where(QuestionAnswer.session_id == assessment.id)
+        .where(QuestionAnswer.event_type == "needs_review")
+    ).all()
+    flagged_by_outcome: Dict[int, set[str]] = {}
+    for row in review_rows:
+        if row.concept_tested:
+            flagged_by_outcome.setdefault(row.learning_outcome_id, set()).add(
+                row.concept_tested
+            )
+
     tracking: Dict[int, Dict[str, List[str]]] = {}
     for outcome in outcomes:
         all_concepts = _parse_key_concepts(outcome)
         covered = covered_by_outcome.get(outcome.id, set())
+        flagged = flagged_by_outcome.get(outcome.id, set())
         remaining = [c for c in all_concepts if c not in covered]
         tracking[outcome.id] = {
             "all": all_concepts,
             "covered": sorted(covered),
             "remaining": remaining,
+            "flagged": sorted(flagged),
         }
     return tracking

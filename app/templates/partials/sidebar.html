@@ -14,8 +14,10 @@
         {% if tracking.all %}
         <ul class="concept-list">
             {% for concept in tracking.all %}
-            <li class="{% if concept in tracking.covered %}concept-covered{% else %}concept-pending{% endif %}">
-                <span class="concept-icon">{% if concept in tracking.covered %}✅{% else %}⏳{% endif %}</span>
+            {# M4: concepts flagged needs_review (escalation cap) outrank the
+               plain pending state — they are never in covered. #}
+            <li class="{% if concept in tracking.covered %}concept-covered{% elif concept in tracking.flagged %}concept-flagged{% else %}concept-pending{% endif %}">
+                <span class="concept-icon">{% if concept in tracking.covered %}✅{% elif concept in tracking.flagged %}🚩{% else %}⏳{% endif %}</span>
                 <span>{{ concept }}</span>
             </li>
             {% endfor %}

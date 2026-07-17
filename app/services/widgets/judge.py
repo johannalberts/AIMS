@@ -79,6 +79,17 @@ class RulesValidator:
         if not (2 <= len(payload.options) <= 6):
             issues.append(f"MCQ must have 2-6 options, got {len(payload.options)}")
 
+        # M4 escalation step-down: when the assessment layer requested the
+        # easier stepped-down form, enforce the exact option count so the
+        # ladder shape is deterministic (PLAN_v3.md §9).
+        if context.expected_option_count is not None:
+            if len(payload.options) != context.expected_option_count:
+                issues.append(
+                    f"Escalation step-down requires exactly "
+                    f"{context.expected_option_count} options, got "
+                    f"{len(payload.options)}"
+                )
+
         # Option ids unique
         ids = [o.id for o in payload.options]
         if len(ids) != len(set(ids)):

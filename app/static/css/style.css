@@ -489,6 +489,11 @@ body {
     opacity: 0.7;
 }
 
+/* M4: concept flagged needs_review (escalation cap reached) */
+.concept-list li.concept-flagged {
+    color: var(--warning-color, #f59e0b);
+}
+
 .concept-icon {
     flex-shrink: 0;
     width: 16px;
@@ -1115,4 +1120,50 @@ body {
     margin: 0;
     color: var(--text-secondary, currentColor);
     line-height: 1.45;
+}
+
+/* ====================================================================== */
+/* M4: escalation step-down note + needs-review summary                    */
+/* ====================================================================== */
+
+.teach-panel-step-down {
+    margin: 0;
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--primary-color, #3b82f6);
+}
+
+.needs-review-summary {
+    margin: 0.75rem 0 1rem;
+    padding: 0.75rem 1rem;
+    border: 1px solid var(--warning-color, #f59e0b);
+    border-radius: 0.5rem;
+    background: rgba(245, 158, 11, 0.06);
+    text-align: left;
+}
+
+.needs-review-label {
+    display: block;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 600;
+    color: var(--warning-color, #f59e0b);
+    margin-bottom: 0.35rem;
+}
+
+.needs-review-list {
+    margin: 0 0 0.5rem;
+    padding-left: 1.25rem;
+}
+
+.needs-review-list li {
+    font-size: 0.92rem;
+    line-height: 1.5;
+}
+
+.needs-review-note {
+    margin: 0;
+    font-size: 0.85rem;
+    color: var(--text-secondary, currentColor);
 }
