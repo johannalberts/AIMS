@@ -39,7 +39,7 @@ from app.models import (
     User,
 )
 from app.services.widgets.llm import provider_name
-from app.services.widgets.schema import MCQPayload, WidgetType
+from app.services.widgets.schema import MCQPayload, TrueFalsePayload, WidgetType
 from app.services.widget_assessment import (
     WidgetAssessmentError,
     WidgetAssessmentService,
@@ -59,8 +59,11 @@ def check(name, condition, detail=""):
         print(f"  FAIL: {name}: {detail}")
 
 
-def _pick_wrong_option(payload: MCQPayload) -> str:
-    """Return the id of any non-correct option for the given MCQ payload."""
+def _pick_wrong_option(payload) -> str:
+    """Return the form value that answers `payload` incorrectly — an MCQ
+    option id, or "true"/"false" for the true/false rung (M5)."""
+    if isinstance(payload, TrueFalsePayload):
+        return "false" if payload.is_true else "true"
     wrong = [o for o in payload.options if not o.is_correct]
     if not wrong:
         raise AssertionError("MCQ payload has no wrong options to pick")
@@ -226,7 +229,7 @@ def main():
             res = service.process_answer(sid, wrong_id)
             check(f"B: turn {wrong_turns} scored wrong",
                   res["score_result"].is_correct is False)
-            next_p: MCQPayload = res["next_payload"]
+            next_p = res["next_payload"]
 
             if wrong_turns < k:
                 check(f"B: turn {wrong_turns} not capped",
@@ -236,14 +239,21 @@ def main():
                 check(f"B: turn {wrong_turns} stays on same concept",
                       next_p is not None
                       and next_p.concept_tested == target_concept)
-                # Each regeneration must differ in stem AND distractor set.
+                # Each regeneration must differ in stem. MCQ regens must also
+                # differ in distractor set; at the step-down rung (M5) the
+                # regenerated payload is true/false, which is a different
+                # question by construction.
                 check(f"B: turn {wrong_turns} new stem",
                       next_p.stem not in seen_stems,
                       f"stem reused: {next_p.stem!r}")
-                check(f"B: turn {wrong_turns} new distractor set",
-                      tuple(sorted(_option_texts(next_p))) not in seen_option_sets)
+                if isinstance(next_p, MCQPayload):
+                    check(f"B: turn {wrong_turns} new distractor set",
+                          tuple(sorted(_option_texts(next_p))) not in seen_option_sets)
+                    seen_option_sets.add(tuple(sorted(_option_texts(next_p))))
+                else:
+                    check(f"B: turn {wrong_turns} steps down to true/false",
+                          isinstance(next_p, TrueFalsePayload))
                 seen_stems.add(next_p.stem)
-                seen_option_sets.add(tuple(sorted(_option_texts(next_p))))
                 payload = next_p
             else:
                 # K-th wrong (or beyond) — must cap and advance.

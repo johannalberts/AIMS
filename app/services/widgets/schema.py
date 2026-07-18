@@ -24,8 +24,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 class WidgetType(str, Enum):
     """Discriminator for widget payload types. New types added in later milestones."""
     MCQ_SINGLE = "mcq_single"
+    TRUE_FALSE = "true_false"  # M5
     # Reserved for later milestones:
-    # TRUE_FALSE = "true_false"
     # MATCHING = "matching"
     # ORDERING = "ordering"
     # CATEGORIZATION = "categorization"
@@ -59,11 +59,10 @@ class GenerationContext(BaseModel):
     failed_attempts: int = 0
     # Widget types already used for this concept (drives escalation):
     widget_history: List[WidgetType] = Field(default_factory=list)
-    # M4 escalation step-down (PLAN_v3.md §9): when set, the generator must
-    # produce an MCQ with exactly this many options — the stepped-down easier
-    # form used after repeated failures at full difficulty. None = default
-    # difficulty (3-4 options for MCQ).
-    target_option_count: Optional[int] = None
+    # Which widget type to generate (M5: select_widget_type owns this decision
+    # — full MCQ for fresh concepts, true/false as the stepped-down rung of the
+    # escalation ladder, PLAN_v3.md §9):
+    target_widget_type: WidgetType = WidgetType.MCQ_SINGLE
 
 
 class AskedQuestionRef(BaseModel):
@@ -90,10 +89,6 @@ class JudgeContext(BaseModel):
     outcome_key: str
     valid_concepts: List[str]
     questions_asked: List[AskedQuestionRef] = Field(default_factory=list)
-    # M4 escalation step-down: when set, the rules validator requires the MCQ
-    # to have exactly this many options, so the stepped-down easier form is
-    # enforced rather than advisory. Mirrors GenerationContext.target_option_count.
-    expected_option_count: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
@@ -162,17 +157,37 @@ class MCQResponse(LearnerResponse):
 
 
 # ---------------------------------------------------------------------------
+# True/False — M5 (the stepped-down rung of the escalation ladder, §9)
+# ---------------------------------------------------------------------------
+
+class TrueFalsePayload(QuestionPayload):
+    """Structured payload for a true/false question.
+
+    The base `stem` carries the statement the learner judges. `is_true` is
+    the known correct answer, scored deterministically.
+    """
+    widget_type: Literal[WidgetType.TRUE_FALSE] = WidgetType.TRUE_FALSE
+    is_true: bool
+
+
+class TrueFalseResponse(LearnerResponse):
+    """Learner's response to a true/false question."""
+    widget_type: Literal[WidgetType.TRUE_FALSE] = WidgetType.TRUE_FALSE
+    answer: bool
+
+
+# ---------------------------------------------------------------------------
 # Discriminated unions for dispatch
 # ---------------------------------------------------------------------------
 
 # Annotated unions let the judge/scorer dispatch on widget_type. New widget
 # types are appended here when their schemas land.
 QuestionPayloadUnion = Annotated[
-    Union[MCQPayload],
+    Union[MCQPayload, TrueFalsePayload],
     Field(discriminator="widget_type"),
 ]
 LearnerResponseUnion = Annotated[
-    Union[MCQResponse],
+    Union[MCQResponse, TrueFalseResponse],
     Field(discriminator="widget_type"),
 ]
 

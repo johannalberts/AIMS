@@ -19,6 +19,8 @@ from app.services.widgets.schema import (
     QuestionPayload,
     LearnerResponse,
     ScoreResult,
+    TrueFalsePayload,
+    TrueFalseResponse,
     WidgetType,
 )
 
@@ -44,6 +46,12 @@ def score_answer(payload: QuestionPayload, response: LearnerResponse) -> ScoreRe
                 f"response for mcq_single must be MCQResponse, got {type(response).__name__}"
             )
         return _score_mcq(payload, response)
+    if payload.widget_type == WidgetType.TRUE_FALSE:
+        if not isinstance(response, TrueFalseResponse):
+            raise ScoringError(
+                f"response for true_false must be TrueFalseResponse, got {type(response).__name__}"
+            )
+        return _score_true_false(payload, response)
     raise ScoringError(f"No scorer for widget_type={payload.widget_type}")
 
 
@@ -64,5 +72,18 @@ def _score_mcq(payload: MCQPayload, response: MCQResponse) -> ScoreResult:
         # the question targeted. A wrong answer covers no new concepts.
         concepts_addressed=[payload.concept_tested] if is_correct else [],
         correct_option_id=correct.id,
+        explanation=payload.explanation,
+    )
+
+
+def _score_true_false(payload: TrueFalsePayload, response: TrueFalseResponse) -> ScoreResult:
+    is_correct = response.answer == payload.is_true
+    return ScoreResult(
+        is_correct=is_correct,
+        score=1.0 if is_correct else 0.0,
+        concepts_addressed=[payload.concept_tested] if is_correct else [],
+        # "true"/"false" doubles as the option id in the TF templates, keeping
+        # the feedback/highlight contract identical to MCQ.
+        correct_option_id="true" if payload.is_true else "false",
         explanation=payload.explanation,
     )

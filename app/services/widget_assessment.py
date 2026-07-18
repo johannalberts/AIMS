@@ -22,12 +22,12 @@ remediation loop: a wrong answer (single MCQ → 0 % → re_teach band per
 PLAN_v3.md §9) triggers a teach panel and a regenerated MCQ on the *same*
 concept (driven by the M1 `questions_asked` dedup, now actually invoked).
 
-M4 adds the escalation ladder (PLAN_v3.md §9, decisions confirmed with the
-user):
-- After `STEP_DOWN_THRESHOLD` wrong answers on a concept, the MCQ steps down
-  to its easier 2-option form ("MCQ with fewer options" — the true/false
-  widget-type step-down is M5). Enforced via GenerationContext.target_option_count
-  + a judge rule (JudgeContext.expected_option_count).
+M4/M5 implement the escalation ladder (PLAN_v3.md §9, decisions confirmed
+with the user):
+- After `STEP_DOWN_THRESHOLD` wrong answers on a concept, `select_widget_type`
+  steps the next question down from the full-form MCQ to a **true/false**
+  question (M5 — the true second widget type; it replaced M4's interim
+  2-option-MCQ rung).
 - After `MAX_FAILED_ATTEMPTS_PER_CONCEPT` wrong answers, the escalation cap
   fires: the concept is flagged `needs_review` (persisted as an audit event
   row and surfaced on the completion screen + sidebar), left uncovered so
@@ -58,6 +58,8 @@ from app.services.widgets.schema import (
     MCQOption,
     QuestionPayload,
     ScoreResult,
+    TrueFalsePayload,
+    TrueFalseResponse,
     WidgetType,
 )
 from app.services.widgets.judge import Judge, judge_or_regenerate
@@ -101,6 +103,8 @@ def _payload_from_dict(data: Dict[str, Any]) -> QuestionPayload:
     wt = data.get("widget_type")
     if wt == WidgetType.MCQ_SINGLE.value or wt == WidgetType.MCQ_SINGLE:
         return MCQPayload.model_validate(data)
+    if wt == WidgetType.TRUE_FALSE.value or wt == WidgetType.TRUE_FALSE:
+        return TrueFalsePayload.model_validate(data)
     raise WidgetAssessmentError(f"Unknown widget_type in persisted payload: {wt!r}")
 
 
@@ -115,13 +119,27 @@ class WidgetAssessmentService:
 
     MAX_GENERATE_ATTEMPTS = 3
 
-    # M4 escalation ladder (PLAN_v3.md §9, thresholds confirmed with the user):
-    # - After STEP_DOWN_THRESHOLD wrong answers on the same concept, the
-    #   regenerated MCQ steps down to its easier 2-option form.
+    # Escalation ladder (PLAN_v3.md §9, thresholds confirmed with the user):
+    # - After STEP_DOWN_THRESHOLD wrong answers on the same concept,
+    #   select_widget_type steps the next question down to true/false (M5).
     # - After MAX_FAILED_ATTEMPTS_PER_CONCEPT wrong answers, stop regenerating,
     #   flag the concept `needs_review`, and advance.
     STEP_DOWN_THRESHOLD = 2
     MAX_FAILED_ATTEMPTS_PER_CONCEPT = 3
+
+    @classmethod
+    def select_widget_type(cls, wrong_count: int) -> WidgetType:
+        """The §3 `select_widget_type` node — owns escalation type selection.
+
+        Fresh concepts (and a first failure) get the full-form MCQ; once the
+        learner has failed `STEP_DOWN_THRESHOLD` times on the same concept,
+        the next question steps down to true/false — simple recognition
+        instead of discrimination (PLAN_v3.md §9). True/false is escalation-
+        only by user decision: it is never picked for a fresh concept.
+        """
+        if wrong_count >= cls.STEP_DOWN_THRESHOLD:
+            return WidgetType.TRUE_FALSE
+        return WidgetType.MCQ_SINGLE
 
     def __init__(self, db_session: Session, judge: Optional[Judge] = None):
         self.db_session = db_session
@@ -176,14 +194,14 @@ class WidgetAssessmentService:
             )
 
         payload = _payload_from_dict(json.loads(open_qa.question_payload))
-        response = MCQResponse(selected_option_id=selected_option_id)
+        response = self._response_from_submission(payload, selected_option_id)
 
         try:
             result = score_answer(payload, response)
         except ScoringError as e:
             raise WidgetAssessmentError(str(e)) from e
 
-        self._record_answer(open_qa, response, result)
+        self._record_answer(open_qa, selected_option_id, response, result)
 
         answered_outcome = next(
             (o for o in outcomes if o.id == open_qa.learning_outcome_id), None
@@ -202,12 +220,13 @@ class WidgetAssessmentService:
             # M2 path: advance to the next pending concept/outcome.
             next_target = self._next_target(assessment, outcomes)
         else:
-            # Wrong answer — single MCQ is binary, so this is the re_teach
-            # band (< 20 % per PLAN_v3.md §9). rephrase (20–80 %) only becomes
-            # relevant once partial-credit widget types land (M5+).
+            # Wrong answer — MCQ and true/false are both binary, so this is
+            # the re_teach band (< 20 % per PLAN_v3.md §9). rephrase (20–80 %)
+            # only becomes relevant once partial-credit widget types land.
             if wrong_count < self.MAX_FAILED_ATTEMPTS_PER_CONCEPT:
-                # M4 step-down: at/above STEP_DOWN_THRESHOLD the regenerated
-                # MCQ drops to its easier 2-option form (see `_generate`).
+                # Escalation step-down: at/above STEP_DOWN_THRESHOLD the next
+                # question is generated as true/false (see `_generate` /
+                # `select_widget_type`).
                 step_down = wrong_count >= self.STEP_DOWN_THRESHOLD
                 remediation = self._build_remediation(
                     answered_outcome, concept, payload, step_down=step_down
@@ -271,6 +290,28 @@ class WidgetAssessmentService:
     # DB helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _response_from_submission(
+        payload: QuestionPayload, submitted: str
+    ) -> "MCQResponse | TrueFalseResponse":
+        """Map the raw posted `option_id` form value to a typed response.
+
+        The HTMX form posts a single string for every widget type: an option
+        id ('a','b',...) for MCQ, "true"/"false" for true/false (M5). An
+        invalid value for the payload's type is a client bug — surface it
+        loudly rather than silently mis-scoring (mirrors the scorer's
+        unknown-option-id behavior).
+        """
+        if payload.widget_type == WidgetType.TRUE_FALSE:
+            normalized = submitted.strip().lower()
+            if normalized not in ("true", "false"):
+                raise WidgetAssessmentError(
+                    f"Invalid true/false submission {submitted!r}; "
+                    f"expected 'true' or 'false'."
+                )
+            return TrueFalseResponse(answer=(normalized == "true"))
+        return MCQResponse(selected_option_id=submitted)
+
     def _load_assessment(self, assessment_id: int) -> AssessmentSession:
         assessment = self.db_session.get(AssessmentSession, assessment_id)
         if not assessment:
@@ -323,7 +364,7 @@ class WidgetAssessmentService:
             select(QuestionAnswer)
             .where(QuestionAnswer.session_id == assessment.id)
             .where(QuestionAnswer.answer == None)
-            .where(QuestionAnswer.widget_type == WidgetType.MCQ_SINGLE.value)
+            .where(QuestionAnswer.widget_type.is_not(None))
             .order_by(QuestionAnswer.asked_at.desc())
         ).first()
 
@@ -349,9 +390,17 @@ class WidgetAssessmentService:
         return qa
 
     def _record_answer(
-        self, qa: QuestionAnswer, response: MCQResponse, result: ScoreResult
+        self,
+        qa: QuestionAnswer,
+        submitted: str,
+        response: "MCQResponse | TrueFalseResponse",
+        result: ScoreResult,
     ) -> None:
-        qa.answer = response.selected_option_id
+        # `qa.answer` is the denormalized learner pick, stored as the raw form
+        # value posted (an MCQ option id, or "true"/"false" for M5). The
+        # templates read it back as `selected_option_id`, so it must be that
+        # exact string regardless of widget type.
+        qa.answer = submitted
         qa.response_payload = json.dumps(response.model_dump(mode="json"))
         qa.score = result.score
         qa.is_correct = result.is_correct
@@ -375,7 +424,7 @@ class WidgetAssessmentService:
             select(QuestionAnswer)
             .where(QuestionAnswer.session_id == assessment.id)
             .where(QuestionAnswer.answer != None)
-            .where(QuestionAnswer.widget_type == WidgetType.MCQ_SINGLE.value)
+            .where(QuestionAnswer.widget_type.is_not(None))
         ).all()
 
         for outcome in outcomes:
@@ -433,7 +482,7 @@ class WidgetAssessmentService:
         qas = self.db_session.exec(
             select(QuestionAnswer)
             .where(QuestionAnswer.session_id == assessment.id)
-            .where(QuestionAnswer.widget_type == WidgetType.MCQ_SINGLE.value)
+            .where(QuestionAnswer.widget_type.is_not(None))
         ).all()
 
         # Per-outcome: attempted set, covered (correct) set, wrong counts.
@@ -497,7 +546,7 @@ class WidgetAssessmentService:
             .where(QuestionAnswer.session_id == assessment.id)
             .where(QuestionAnswer.learning_outcome_id == outcome_id)
             .where(QuestionAnswer.concept_tested == concept)
-            .where(QuestionAnswer.widget_type == WidgetType.MCQ_SINGLE.value)
+            .where(QuestionAnswer.widget_type.is_not(None))
             .where(QuestionAnswer.answer != None)
             .where(QuestionAnswer.is_correct == False)
         ).all()
@@ -571,10 +620,11 @@ class WidgetAssessmentService:
         """Persist a non-interactive `re_teach` event row for the audit trail.
 
         Stored with `event_type="re_teach"`, `widget_type=None`, `answer=None`
-        so it is never mistaken for an open MCQ by `_load_open_question` /
-        `_next_target` (both filter on `widget_type == mcq_single` or
-        `answer != None`). The rendered teach-panel content is serialized into
-        `question_payload` so the page can be reconstructed on reload.
+        so it is never mistaken for an open question by `_load_open_question`
+        / `_next_target` (both select only rows with a non-NULL `widget_type`,
+        i.e. actual widget questions of any type). The rendered teach-panel
+        content is serialized into `question_payload` so the page can be
+        reconstructed on reload.
         """
         qa = QuestionAnswer(
             session_id=assessment.id,
@@ -604,18 +654,12 @@ class WidgetAssessmentService:
         # this concept (so the generator avoids reuse).
         asked_refs = self._asked_refs_for(assessment, target.outcome, target.concept)
 
-        # Concept-level wrong count drives both the failed_attempts prompt
-        # hint and the M4 escalation step-down.
+        # Concept-level wrong count drives the failed_attempts prompt hint and
+        # the escalation ladder's widget-type selection (§3/§9).
         wrong_count = self._wrong_count_for_concept(
             assessment, target.outcome.id, target.concept
         )
-
-        # M4 escalation ladder (PLAN_v3.md §9): once the learner has failed
-        # this concept STEP_DOWN_THRESHOLD times, regenerate in the easier
-        # 2-option form. Enforced by a judge rule, not just the prompt.
-        target_option_count = (
-            2 if wrong_count >= self.STEP_DOWN_THRESHOLD else None
-        )
+        widget_type = self.select_widget_type(wrong_count)
 
         ctx = GenerationContext(
             topic=assessment.lesson.topic,
@@ -626,8 +670,8 @@ class WidgetAssessmentService:
             concepts_covered=[],
             questions_asked=asked_refs,
             failed_attempts=wrong_count,
-            widget_history=[],
-            target_option_count=target_option_count,
+            widget_history=[r.widget_type for r in asked_refs],
+            target_widget_type=widget_type,
         )
 
         gen_fn = make_generator(ctx)
@@ -635,7 +679,6 @@ class WidgetAssessmentService:
             outcome_key=target.outcome.key,
             valid_concepts=_parse_key_concepts(target.outcome),
             questions_asked=asked_refs,
-            expected_option_count=target_option_count,
         )
         try:
             payload, verdict, _attempts = judge_or_regenerate(
@@ -669,7 +712,7 @@ class WidgetAssessmentService:
             .where(QuestionAnswer.session_id == assessment.id)
             .where(QuestionAnswer.learning_outcome_id == outcome.id)
             .where(QuestionAnswer.concept_tested == concept)
-            .where(QuestionAnswer.widget_type == WidgetType.MCQ_SINGLE.value)
+            .where(QuestionAnswer.widget_type.is_not(None))
             .order_by(QuestionAnswer.asked_at)
         ).all()
         refs: List[AskedQuestionRef] = []
@@ -724,7 +767,7 @@ def _answered_qas(db_session: Session, assessment: AssessmentSession) -> List[Qu
         select(QuestionAnswer)
         .where(QuestionAnswer.session_id == assessment.id)
         .where(QuestionAnswer.answer != None)
-        .where(QuestionAnswer.widget_type == WidgetType.MCQ_SINGLE.value)
+        .where(QuestionAnswer.widget_type.is_not(None))
         .order_by(QuestionAnswer.asked_at)
     ).all()
 

@@ -6,11 +6,12 @@ real database, against the seeded M2 test lesson (2 outcomes × 3 concepts).
 Covers the M4 exit criteria from PLAN_v3.md §12 plus the §9/§11 decisions
 confirmed with the user:
 
-  Ladder (step down at 2, cap at 3):
+  Ladder (step down at 2, cap at 3 — M5 shape):
   1. Wrong #1 on a concept → re_teach + regenerated FULL-form MCQ on the same
      concept (remediation.step_down is False).
-  2. Wrong #2 → re_teach + regenerated STEPPED-DOWN MCQ (exactly 2 options,
-     enforced by the judge) on the same concept (remediation.step_down True).
+  2. Wrong #2 → re_teach + regenerated question STEPPED DOWN to true/false on
+     the same concept (remediation.step_down True). (M5: the true/false widget
+     replaced M4's interim 2-option-MCQ rung.)
   3. A correct answer on the stepped-down form covers the concept and advances.
   4. Wrong #3 (at the stepped-down rung) → escalation cap: no regeneration,
      concept flagged needs_review (persisted audit row), learner advances.
@@ -21,15 +22,16 @@ confirmed with the user:
   6. The flagged concept stays uncovered (not-mastered) — never silently
      marked learned, and the loop terminates (no infinite regeneration).
 
-  Judge enforcement:
-  7. RulesValidator rejects a payload whose option count does not match
-     JudgeContext.expected_option_count (the step-down is not advisory).
+  Selection thresholds:
+  7. select_widget_type returns MCQ below the step-down threshold and
+     true/false at/above it (the step-down is a deterministic type decision,
+     not a prompt hint).
 
 Requires:
 - scripts/migrate_m2_widget_payload.py applied
 - scripts/seed_m2_widget_lesson.py run (creates the test lesson)
 - OPENROUTER_API_KEY / OPENAI_API_KEY in .env, OR the StubGenerator fallback
-  (assertions are provider-independent: option COUNT is judge-enforced, and
+  (assertions are provider-independent: widget TYPES are deterministic, and
   only stems are asserted to differ).
 
 Run: uv run python scripts/test_m4_escalation.py
@@ -53,12 +55,11 @@ from app.models import (
     User,
 )
 from app.services.widgets.llm import provider_name
-from app.services.widgets.judge import RulesValidator
 from app.services.widgets.schema import (
     GenerationContext,
-    JudgeContext,
     MCQPayload,
-    MCQOption,
+    TrueFalsePayload,
+    WidgetType,
 )
 from app.services.widgets.generator import StubGenerator
 from app.services.widget_assessment import (
@@ -81,7 +82,11 @@ def check(name, condition, detail=""):
         print(f"  FAIL: {name}: {detail}")
 
 
-def _pick_wrong_option(payload: MCQPayload) -> str:
+def _pick_wrong_option(payload) -> str:
+    """The form value that answers `payload` incorrectly (MCQ option id, or
+    "true"/"false" for the true/false rung)."""
+    if isinstance(payload, TrueFalsePayload):
+        return "false" if payload.is_true else "true"
     wrong = [o for o in payload.options if not o.is_correct]
     if not wrong:
         raise AssertionError("MCQ payload has no wrong options to pick")
@@ -155,11 +160,12 @@ def main():
         check("A: wrong #1 stays on concept",
               p1 is not None and p1.concept_tested == concept)
         check("A: wrong #1 new stem", p1 is not None and p1.stem != p0.stem)
-        print(f"  wrong #1 -> regen options={len(p1.options)}")
+        print(f"  wrong #1 -> regen type={p1.widget_type.value}")
 
-        # Wrong #2 — step-down rung: exactly 2 options (judge-enforced).
+        # Wrong #2 — step-down rung: the question is regenerated as
+        # true/false (M5 replaced M4's 2-option-MCQ rung).
         r2 = service.process_answer(sid, _pick_wrong_option(p1))
-        p2: MCQPayload = r2["next_payload"]
+        p2 = r2["next_payload"]
         check("A: wrong #2 scored wrong", r2["score_result"].is_correct is False)
         check("A: wrong #2 step_down True",
               r2.get("remediation", {}).get("step_down") is True,
@@ -167,15 +173,17 @@ def main():
         check("A: wrong #2 not capped", r2.get("escalation_capped") is False)
         check("A: wrong #2 stays on concept",
               p2 is not None and p2.concept_tested == concept)
-        check("A: stepped-down MCQ has exactly 2 options",
-              p2 is not None and len(p2.options) == 2,
-              f"got {len(p2.options) if p2 else None}")
+        check("A: stepped-down payload is true/false",
+              isinstance(p2, TrueFalsePayload),
+              f"got {type(p2).__name__ if p2 else None}")
         check("A: stepped-down stem differs",
               p2 is not None and p2.stem not in {p0.stem, p1.stem})
-        print(f"  wrong #2 -> stepped-down options={len(p2.options)}")
+        print(f"  wrong #2 -> stepped-down type={p2.widget_type.value}")
 
         # Correct on the stepped-down form — concept covered, advance.
-        r3 = service.process_answer(sid, p2.correct_option.id)
+        # (TF-aware submission: the correct answer is the payload's is_true.)
+        correct_tf = "true" if p2.is_true else "false"
+        r3 = service.process_answer(sid, correct_tf)
         check("A: correct on stepped-down scored correct",
               r3["score_result"].is_correct is True)
         check("A: no remediation on correct", r3.get("remediation") is None)
@@ -243,11 +251,11 @@ def main():
                       next_p.stem not in seen_stems,
                       f"stem reused: {next_p.stem!r}")
                 # Ladder shape: the FINAL rung before the cap is the
-                # stepped-down 2-option form.
+                # stepped-down true/false form (M5).
                 if wrong_turns >= WidgetAssessmentService.STEP_DOWN_THRESHOLD:
-                    check(f"B: turn {wrong_turns} stepped down to 2 options",
-                          len(next_p.options) == 2,
-                          f"got {len(next_p.options)}")
+                    check(f"B: turn {wrong_turns} stepped down to true/false",
+                          isinstance(next_p, TrueFalsePayload),
+                          f"got {type(next_p).__name__}")
                 seen_stems.add(next_p.stem)
                 payload = next_p
             else:
@@ -312,55 +320,33 @@ def main():
         print("\n[Phase B] passed ✓")
 
         # --------------------------------------------------------------
-        # Phase C — judge enforcement + stub directive (provider-independent)
+        # Phase C — selection + generator directive (provider-independent)
         # --------------------------------------------------------------
-        print("\n[Phase C] rules enforcement of expected_option_count")
-        rules = RulesValidator()
-        base_ctx = JudgeContext(
-            outcome_key="T1", valid_concepts=["soil"], expected_option_count=2
-        )
-        two_opt = MCQPayload(
-            concept_tested="soil",
-            stem="Which of these best describes healthy soil?",
-            options=[
-                MCQOption(id="a", text="Dark, crumbly, rich in organic matter", is_correct=True),
-                MCQOption(id="b", text="Bright blue and smells of ammonia", is_correct=False),
-            ],
-        )
-        three_opt = MCQPayload(
-            concept_tested="soil",
-            stem="Which of these best describes healthy soil?",
-            options=[
-                MCQOption(id="a", text="Dark, crumbly, rich in organic matter", is_correct=True),
-                MCQOption(id="b", text="Bright blue and smells of ammonia", is_correct=False),
-                MCQOption(id="c", text="Glows in the dark", is_correct=False),
-            ],
-        )
-        check("C: 2-option payload passes when 2 expected",
-              rules.validate(two_opt, base_ctx).valid,
-              f"{rules.validate(two_opt, base_ctx).issues}")
-        v = rules.validate(three_opt, base_ctx)
-        check("C: 3-option payload rejected when 2 expected",
-              not v.valid and any("exactly 2" in i for i in v.issues),
-              f"{v.issues}")
-        open_ctx = JudgeContext(outcome_key="T1", valid_concepts=["soil"])
-        check("C: 3-option payload passes when no expectation set",
-              rules.validate(three_opt, open_ctx).valid)
+        print("\n[Phase C] select_widget_type thresholds + stub directive")
+        swt = WidgetAssessmentService.select_widget_type
+        step = WidgetAssessmentService.STEP_DOWN_THRESHOLD
+        check("C: select_widget_type -> MCQ below threshold",
+              swt(0) == WidgetType.MCQ_SINGLE and swt(step - 1) == WidgetType.MCQ_SINGLE)
+        check("C: select_widget_type -> TF at/above threshold",
+              swt(step) == WidgetType.TRUE_FALSE
+              and swt(step + 5) == WidgetType.TRUE_FALSE)
 
         stub = StubGenerator()
-        stepped = stub(GenerationContext(
+        tf_payload = stub(GenerationContext(
             topic="t", outcome_description="d", outcome_key="T1",
             key_concepts=["soil"], targeted_concept="soil",
-            target_option_count=2,
+            target_widget_type=WidgetType.TRUE_FALSE,
         ))
-        check("C: StubGenerator honors target_option_count=2",
-              len(stepped.options) == 2 and stepped.difficulty == "easy")
-        full = stub(GenerationContext(
+        check("C: stub honors TF directive (TrueFalsePayload, easy)",
+              isinstance(tf_payload, TrueFalsePayload)
+              and tf_payload.difficulty == "easy",
+              f"got {type(tf_payload).__name__}")
+        mcq_payload = stub(GenerationContext(
             topic="t", outcome_description="d", outcome_key="T1",
             key_concepts=["soil"], targeted_concept="soil",
         ))
-        check("C: StubGenerator default stays full-form",
-              len(full.options) >= 3)
+        check("C: stub default stays full-form MCQ",
+              isinstance(mcq_payload, MCQPayload) and len(mcq_payload.options) >= 3)
 
     print("=" * 60)
     print(f"Passed: {len(_passes)}")

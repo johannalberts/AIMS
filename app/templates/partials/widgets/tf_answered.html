@@ -1,0 +1,42 @@
+{#
+Single answered true/false card (read-only, M5). Used both for historical
+turns on page load and as the first half of the POST response.
+Context vars (same names as mcq_answered.html so the timeline can dispatch
+uniformly):
+  payload             — TrueFalsePayload (or its persisted dict)
+  selected_option_id  — "true" | "false" (the learner's pick)
+  is_correct          — bool
+  correct_option_id   — "true" | "false"
+  explanation         — str | None
+  outcome_key         — str (for the header badge)
+#}
+<div class="mcq-card mcq-answered {% if is_correct %}mcq-correct{% else %}mcq-wrong{% endif %}">
+    <div class="mcq-card-header">
+        <span class="outcome-key">{{ outcome_key }}</span>
+    </div>
+    <div class="mcq-stem">{{ payload.stem }}</div>
+    <ul class="mcq-options mcq-options-readonly tf-options">
+        {% for opt_id, opt_label in [("true", "True"), ("false", "False")] %}
+        <li class="mcq-option
+            {% if opt_id == correct_option_id %}option-correct{% endif %}
+            {% if opt_id == selected_option_id and not is_correct %}option-wrong{% endif %}
+            {% if opt_id == selected_option_id and is_correct %}option-selected-correct{% endif %}">
+            <span class="mcq-option-marker">
+                {% if opt_id == correct_option_id %}✓{% elif opt_id == selected_option_id %}✗{% else %}·{% endif %}
+            </span>
+            <span class="mcq-option-text">{{ opt_label }}</span>
+            {% if opt_id == selected_option_id %}
+                <span class="mcq-your-answer">your answer</span>
+            {% endif %}
+        </li>
+        {% endfor %}
+    </ul>
+    <div class="mcq-feedback">
+        {% if is_correct %}
+            <span class="mcq-feedback-correct">✅ Correct.</span>
+        {% else %}
+            <span class="mcq-feedback-wrong">❌ Not quite.</span>
+        {% endif %}
+        {% if explanation %}<span class="mcq-explanation">{{ explanation }}</span>{% endif %}
+    </div>
+</div>

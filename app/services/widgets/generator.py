@@ -20,13 +20,14 @@ loop live in judge.judge_or_regenerate, which wraps any generator callable.
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from app.services.widgets.schema import (
     GenerationContext,
     MCQOption,
     MCQPayload,
     QuestionPayload,
+    TrueFalsePayload,
+    WidgetType,
 )
 from app.services.widgets.llm import build_llm, llm_available, LLMConfigError
 
@@ -71,16 +72,13 @@ class StubGenerator:
                 difficulty=None,
             )
         # Valid payload, varied by call count so dedup rules see fresh stems.
-        # M4: honor the escalation step-down directive — produce the easier
-        # 2-option form when the context requests it.
-        if context.target_option_count == 2:
-            return MCQPayload(
+        # M5: honor the widget-type directive — produce a true/false payload
+        # (the stepped-down rung) when the context requests it.
+        if context.target_widget_type == WidgetType.TRUE_FALSE:
+            return TrueFalsePayload(
                 concept_tested=context.targeted_concept,
-                stem=f"Stub question {self._call_count} (easier): which best describes '{context.targeted_concept}'?",
-                options=[
-                    MCQOption(id="a", text=f"Correct description of {context.targeted_concept} (v{self._call_count})", is_correct=True),
-                    MCQOption(id="b", text=f"A clearly wrong distractor (v{self._call_count})", is_correct=False),
-                ],
+                stem=f"Stub statement {self._call_count}: '{context.targeted_concept}' is a core idea in this lesson.",
+                is_true=self._call_count % 2 == 1,
                 explanation=f"{context.targeted_concept} is a key concept of {context.outcome_description}.",
                 difficulty="easy",
             )
@@ -110,44 +108,20 @@ class MCQGenerator:
     ValidationError, which judge_or_regenerate treats as a failed attempt.
     """
 
-    # Shared requirements for every MCQ. Option-count and id-lettering rules
-    # are NOT here — they vary with the escalation rung and are added by
-    # _system_prompt() so the prompt never contradicts itself (a contradictory
-    # prompt makes models follow the first rule and ignore the override).
-    BASE_PROMPT = (
+    SYSTEM_PROMPT = (
         "You are an expert assessment designer. Generate a single multiple-choice "
         "question that tests the SPECIFIC targeted concept. Requirements:\n"
         "- Exactly one correct option.\n"
+        "- 3-4 options total (including the correct one).\n"
         "- Distractors must be plausible but unambiguously wrong.\n"
         "- The stem must be clear and self-contained.\n"
         "- Do NOT reuse any previously asked stem or option text (provided below).\n"
         "- The question must genuinely test the targeted concept, not adjacent ones.\n"
         "- Provide a brief explanation of why the correct answer is correct.\n"
+        "- Option ids must be 'a','b','c','d'.\n"
         "- Vary the angle/surface of the question from any prior attempts; do not "
         "just rephrase the same question.\n"
     )
-
-    FULL_FORM_RULES = (
-        "- 3-4 options total (including the correct one).\n"
-        "- Option ids must be 'a','b','c','d'.\n"
-    )
-
-    # M4 escalation step-down (PLAN_v3.md §9): used when the context requests
-    # the easier 2-option form after repeated failure.
-    STEP_DOWN_RULES = (
-        "- ESCALATION STEP-DOWN: this learner has repeatedly struggled with this "
-        "concept, so generate the EASIER form.\n"
-        "- Exactly 2 options total (one correct, one distractor). Option ids 'a','b'.\n"
-        "- Test simple recognition of the concept, not nuanced discrimination.\n"
-        "- The distractor must be clearly wrong to a learner who grasped the basics.\n"
-        "- Set difficulty to 'easy'.\n"
-    )
-
-    @staticmethod
-    def _system_prompt(context: GenerationContext) -> str:
-        if context.target_option_count == 2:
-            return MCQGenerator.BASE_PROMPT + MCQGenerator.STEP_DOWN_RULES
-        return MCQGenerator.BASE_PROMPT + MCQGenerator.FULL_FORM_RULES
 
     def __init__(self, llm=None):
         if llm is None:
@@ -176,45 +150,75 @@ class MCQGenerator:
         try:
             structured = self.llm.with_structured_output(MCQPayload)
             payload = structured.invoke([
-                ("system", self._system_prompt(context)),
+                ("system", self.SYSTEM_PROMPT),
                 ("human", human),
             ])
+            return payload
         except Exception as e:
             logger.warning(f"MCQGenerator LLM call failed: {e}")
             raise GeneratorError(str(e)) from e
-        return self._enforce_option_count(payload, context.target_option_count)
 
-    @staticmethod
-    def _enforce_option_count(
-        payload: QuestionPayload, target_option_count: Optional[int]
-    ) -> QuestionPayload:
-        """M4 safety net: trim an over-long MCQ down to the requested rung.
 
-        Even with a non-contradictory prompt a model can miscount. Dropping
-        surplus distractors keeps the payload valid (exactly-one-correct,
-        uniqueness, etc. are re-checked by the judge afterwards), and is
-        exactly what "MCQ with fewer options" means (PLAN_v3.md §9). Only
-        ever trims — never invents options to pad.
-        """
-        if (
-            target_option_count is None
-            or not isinstance(payload, MCQPayload)
-            or len(payload.options) <= target_option_count
-        ):
-            return payload
-        correct = payload.correct_option
-        distractors = [o for o in payload.options if not o.is_correct]
-        kept = [correct] + distractors[: target_option_count - 1]
-        letters = "abcdef"
-        trimmed = [
-            MCQOption(id=letters[i], text=o.text, is_correct=o.is_correct)
-            for i, o in enumerate(kept)
-        ]
-        logger.info(
-            f"Trimmed MCQ from {len(payload.options)} to {len(trimmed)} options "
-            f"(escalation step-down)."
+class TrueFalseGenerator:
+    """LLM-driven generator for true/false payloads (M5).
+
+    True/false is the *stepped-down* rung of the escalation ladder
+    (PLAN_v3.md §9): it is only requested after the learner has repeatedly
+    failed the full-form MCQ, so the prompt is inherently the easy-rung
+    prompt — simple recognition, unambiguous statement.
+    """
+
+    SYSTEM_PROMPT = (
+        "You are an expert assessment designer. Generate a single true/false "
+        "statement that tests the SPECIFIC targeted concept. This learner has "
+        "repeatedly struggled with this concept, so this is the EASIER form: "
+        "test simple recognition, not nuanced discrimination. Requirements:\n"
+        "- The statement must be unambiguously true or unambiguously false — "
+        "no opinion, no edge cases, no 'it depends'.\n"
+        "- A false statement must be clearly wrong to a learner who grasped the "
+        "basics, not a subtle trick.\n"
+        "- The statement must be clear, self-contained, and declarative (not a question).\n"
+        "- Do NOT reuse any previously asked stem or statement (provided below).\n"
+        "- The statement must genuinely test the targeted concept, not adjacent ones.\n"
+        "- Provide a brief explanation of why the statement is true or false.\n"
+        "- Set difficulty to 'easy'.\n"
+        "- Vary the angle/surface from any prior attempts; do not just rephrase.\n"
+    )
+
+    def __init__(self, llm=None):
+        if llm is None:
+            try:
+                llm = build_llm(temperature=0.7)
+            except LLMConfigError as e:
+                raise GeneratorError(str(e)) from e
+        self.llm = llm
+
+    def __call__(self, context: GenerationContext) -> QuestionPayload:
+        prior_block = "None yet"
+        if context.questions_asked:
+            prior_block = "\n".join(
+                f"- stem: '{q.stem}'"
+                for q in context.questions_asked
+            )
+        human = (
+            f"Topic: {context.topic}\n"
+            f"Learning outcome: {context.outcome_description}\n"
+            f"Targeted concept: {context.targeted_concept}\n"
+            f"All key concepts for this outcome: {context.key_concepts}\n"
+            f"Previously asked questions (DO NOT REUSE these stems):\n{prior_block}\n"
+            f"Failed attempts so far: {context.failed_attempts}\n\n"
+            f"Generate a fresh true/false statement targeting '{context.targeted_concept}'."
         )
-        return payload.model_copy(update={"options": trimmed})
+        try:
+            structured = self.llm.with_structured_output(TrueFalsePayload)
+            payload = structured.invoke([
+                ("system", self.SYSTEM_PROMPT),
+                ("human", human),
+            ])
+            return payload
+        except Exception as e:
+            logger.warning(f"TrueFalseGenerator LLM call failed: {e}")
+            raise GeneratorError(str(e)) from e
 
 
 def make_generator(context: GenerationContext, llm=None) -> "callable":
@@ -223,14 +227,21 @@ def make_generator(context: GenerationContext, llm=None) -> "callable":
     The returned callable closes over `context` so it matches the
     judge_or_regenerate(generate_fn, ...) signature.
 
-    Provider selection: an explicit `llm` wins; otherwise if any LLM provider
-    is configured via env (OpenRouter or OpenAI, see llm.py) the MCQGenerator
-    is used; otherwise fall back to StubGenerator so tests run without a key.
+    Type selection (M5): dispatches on context.target_widget_type — the
+    assessment layer's select_widget_type decision. Provider selection: an
+    explicit `llm` wins; otherwise if any LLM provider is configured via env
+    (OpenRouter or OpenAI, see llm.py) the matching LLM generator is used;
+    otherwise fall back to StubGenerator so tests run without a key.
     """
+    if context.target_widget_type == WidgetType.TRUE_FALSE:
+        gen_cls = TrueFalseGenerator
+    else:
+        gen_cls = MCQGenerator
+
     if llm is not None:
-        gen = MCQGenerator(llm=llm)
+        gen = gen_cls(llm=llm)
     elif llm_available():
-        gen = MCQGenerator()
+        gen = gen_cls()
     else:
         gen = StubGenerator()
     def _generate() -> QuestionPayload:

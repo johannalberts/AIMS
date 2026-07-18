@@ -303,7 +303,12 @@ async def start_lesson(
 
 
 def _widget_turn_from_qa(qa: QuestionAnswer, outcomes_by_id) -> Optional[dict]:
-    """Rebuild the renderer context for an answered MCQ QuestionAnswer row."""
+    """Rebuild the renderer context for an answered widget QuestionAnswer row.
+
+    Handles both M2's MCQ rows and M5's true/false rows: the correct option
+    id is the marked MCQ option, or "true"/"false" derived from `is_true`
+    (matching the scorer's correct_option_id contract).
+    """
     import json as _json
     if not qa.question_payload or not qa.answer:
         return None
@@ -311,10 +316,13 @@ def _widget_turn_from_qa(qa: QuestionAnswer, outcomes_by_id) -> Optional[dict]:
         payload = _json.loads(qa.question_payload)
     except (ValueError, TypeError):
         return None
-    correct_id = next(
-        (o["id"] for o in payload.get("options", []) if o.get("is_correct")),
-        None,
-    )
+    if payload.get("widget_type") == "true_false":
+        correct_id = "true" if payload.get("is_true") else "false"
+    else:
+        correct_id = next(
+            (o["id"] for o in payload.get("options", []) if o.get("is_correct")),
+            None,
+        )
     outcome = outcomes_by_id.get(qa.learning_outcome_id)
     return {
         "payload": payload,
@@ -340,9 +348,9 @@ def _render_widget_assessment(
 
     Walks the QuestionAnswer history in order and dispatches by event_type /
     widget_type:
-      - `re_teach` event  → render the teach-panel partial (M3)
-      - `mcq_single` with no answer   → live interactive MCQ card
-      - `mcq_single` with an answer   → read-only answered card
+      - `re_teach` event            → render the teach-panel partial (M3)
+      - question row with no answer → live interactive card (MCQ or TF, M5)
+      - question row with an answer → read-only answered card (MCQ or TF, M5)
     Kept simple (single pass, append in order) so a page reload reproduces the
     same teach → re-ask sequence the learner saw interactively.
     """
@@ -371,7 +379,10 @@ def _render_widget_assessment(
             remediation.setdefault("outcome_key", outcome.key if outcome else "")
             timeline.append({"kind": "teach", "remediation": remediation})
             continue
-        if msg.widget_type != WidgetType.MCQ_SINGLE.value:
+        if msg.widget_type is None:
+            # Event rows (re_teach handled above, needs_review) carry no
+            # widget payload — skip. Question rows of ANY widget type (M5)
+            # continue through the open/answered dispatch below.
             continue
         if msg.answer is None and msg.question_payload:
             # Open (unanswered) question — render as the live interactive card.
