@@ -92,8 +92,8 @@ Proposed nodes and edges (to be validated against the v1 implementation):
 (generator → judge → payload → renderer → scorer → remediation → regeneration).
 Then add types in order of value and implementation cost:
 
-1. Single-answer MCQ *(v1)*
-2. True/False
+1. Single-answer MCQ *(v1 — done M1/M2)*
+2. True/False *(done M5 — the stepped-down rung of the escalation ladder)*
 3. Matching pairs
 4. Drag-and-drop ordering
 5. Drag-and-drop categorization
@@ -192,13 +192,13 @@ After **K** failed attempts on the *same widget type* for a concept:
 2. After the escalation cap is reached, flag the concept as "needs review"
    rather than looping indefinitely.
 
-**Decided during M4** (implemented in `widget_assessment.py`):
+**Decided during M4, refined in M5** (implemented in `widget_assessment.py`):
 - Ladder: `STEP_DOWN_THRESHOLD = 2`, `MAX_FAILED_ATTEMPTS_PER_CONCEPT = 3`.
-  Wrong #1 → re-teach + fresh full-form MCQ. Wrong #2 → re-teach + stepped-down
-  **2-option MCQ** (the "MCQ with fewer options" rung — chosen so the ladder
-  ships before M5's second widget type; enforced by a judge rule plus a
-  deterministic distractor trim in the generator, not just the prompt).
-  Wrong #3 → cap.
+  Wrong #1 → re-teach + fresh full-form MCQ. Wrong #2 → re-teach + question
+  stepped down to **true/false** (M5 — the real second widget type; it replaced
+  M4's interim 2-option-MCQ rung, which was only ever a placeholder). Type
+  selection is owned by `select_widget_type`, a pure function of the concept's
+  wrong count — deterministic, not a prompt hint. Wrong #3 → cap.
 - Terminal "needs review" behavior: **advance with a persistent flag** (never
   block the learner, §13). The flag is persisted as a `needs_review` audit row
   (same pattern as `re_teach`), surfaced as a 🚩 badge in the sidebar and
@@ -274,9 +274,15 @@ Still to be confirmed by the user (captured here so the doc is self-contained):
   *(Done — `scripts/test_m4_escalation.py`, 46 checks. Ladder: step down to the
   2-option MCQ at 2 failures, cap + `needs_review` flag at 3 — see §9 for the
   confirmed decisions.)*
-- **M5 — Second widget type** (whichever the user picks) — validate the pattern
-  generalizes. Exit criteria: two widget types coexist in one assessment,
-  selected by `select_widget_type`.
+- **M5 — Second widget type** ✅ — validate the pattern generalizes. Exit
+  criteria: two widget types coexist in one assessment, selected by
+  `select_widget_type`.
+  *(Done — `scripts/test_m5_true_false.py`, 41 checks. True/false is the
+  stepped-down rung: it replaced M4's interim 2-option-MCQ rung, so the
+  ladder is now full MCQ (fresh + wrong #1) → true/false (wrong #2) → cap at
+  #3. `select_widget_type` owns the type decision; TF is escalation-only
+  (never picked for a fresh concept). The widget abstraction
+  (schema/generator/judge/scorer/renderer) generalized cleanly — see §9.)*
 - **M6 — RAG grounding into `LearningContent`** — wire up the unused pgvector
   embeddings. Exit criteria: generated questions demonstrably reference
   stored content chunks.

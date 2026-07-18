@@ -1,0 +1,46 @@
+{#
+Unanswered true/false card (M5).
+
+True/false is the stepped-down rung of the escalation ladder (PLAN_v3.md §9) —
+it only appears after repeated failures on the full-form MCQ, so the card
+carries an "Easier question" badge: the format change should never surprise
+the learner.
+
+Context vars: payload (TrueFalsePayload), outcome (LearningOutcome),
+session (AssessmentSession).
+
+Shares the #current-mcq card id with the MCQ card: at any moment there is
+only one unanswered question on the page, whatever its type, and the POST
+response swaps the whole card (see mcq_unanswered.html).
+#}
+<div class="mcq-card mcq-tf" id="current-mcq">
+    <div class="mcq-card-header">
+        <span class="outcome-key">{{ outcome.key }}</span>
+        <span class="concept-badge teach-panel-badge">Easier question</span>
+        {% if payload.concept_tested %}
+        <span class="concept-badge">Targeting: {{ payload.concept_tested }}</span>
+        {% endif %}
+    </div>
+    <div class="tf-prompt">True or false?</div>
+    <div class="mcq-stem">{{ payload.stem }}</div>
+    <form
+        class="mcq-options"
+        hx-post="/assess/{{ session.session_id }}/widget-answer"
+        hx-target="#current-mcq"
+        hx-swap="outerHTML"
+        hx-disabled-elt="button[type=submit]"
+        hx-on::after-request="if(event.detail.successful){ htmx.ajax('POST','/assess/{{ session.session_id }}/sidebar',{target:'#assessment-sidebar',swap:'innerHTML'}); }"
+    >
+        <div class="tf-options">
+            <label class="mcq-option tf-option">
+                <input type="radio" name="option_id" value="true" required>
+                <span class="mcq-option-text">True</span>
+            </label>
+            <label class="mcq-option tf-option">
+                <input type="radio" name="option_id" value="false" required>
+                <span class="mcq-option-text">False</span>
+            </label>
+        </div>
+        <button type="submit" class="btn btn-primary mcq-submit">Submit answer</button>
+    </form>
+</div>

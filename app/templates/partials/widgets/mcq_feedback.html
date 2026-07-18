@@ -1,14 +1,16 @@
 {#
 Response body for POST /assess/{session_id}/widget-answer.
-Layout (M3 + M4):
-  1. Answered card (inline) for the question the learner just answered.
+Layout (M3 + M4 + M5):
+  1. Answered card (inline) for the question the learner just answered —
+     mcq_answered or tf_answered, dispatched on payload.widget_type (M5).
   2. If remediation: a teach panel (re_teach) for the missed concept.
   3. If escalation_capped: a notice that we're moving on with the concept
      flagged needs_review (M4: flag persisted as an audit row).
   4. Either a completion card (listing any needs_review concepts, M4), or the
-     next unanswered MCQ on the same concept (after a wrong answer below the
-     cap — the easier stepped-down form once the step-down threshold is
-     reached) or on the next concept (after a correct answer or capped advance).
+     next unanswered question — mcq_unanswered or tf_unanswered (M5) — on the
+     same concept (after a wrong answer below the cap; true/false once the
+     step-down threshold is reached) or on the next concept (after a correct
+     answer or capped advance).
 Context vars:
   payload, selected_option_id, is_correct, correct_option_id, explanation,
   outcome_key (for the answered card),
@@ -16,7 +18,12 @@ Context vars:
   needs_review_concepts (list[str]),
   next_payload, next_outcome, session, status
 #}
+{# M5: dispatch the answered card by widget type (uniform context var names). #}
+{% if payload.widget_type.value == "true_false" %}
+{% include "partials/widgets/tf_answered.html" %}
+{% else %}
 {% include "partials/widgets/mcq_answered.html" %}
+{% endif %}
 
 {% if remediation %}
 {% include "partials/remediation/teach_panel.html" %}
@@ -45,6 +52,10 @@ Context vars:
 </div>
 {% elif next_payload and next_outcome %}
 {% with payload=next_payload, outcome=next_outcome, session=session %}
-    {% include "partials/widgets/mcq_unanswered.html" %}
+    {% if next_payload.widget_type.value == "true_false" %}
+        {% include "partials/widgets/tf_unanswered.html" %}
+    {% else %}
+        {% include "partials/widgets/mcq_unanswered.html" %}
+    {% endif %}
 {% endwith %}
 {% endif %}

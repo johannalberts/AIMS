@@ -1167,3 +1167,27 @@ body {
     font-size: 0.85rem;
     color: var(--text-secondary, currentColor);
 }
+
+/* ====================================================================== */
+/* M5: true/false widget (stepped-down escalation rung)                    */
+/* ====================================================================== */
+
+.tf-prompt {
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 0.25rem;
+}
+
+.tf-options {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.5rem;
+}
+
+.tf-option {
+    justify-content: center;
+    font-weight: 600;
+}

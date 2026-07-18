@@ -24,6 +24,7 @@ from app.services.widgets.schema import (
     JudgeContext,
     MCQPayload,
     QuestionPayload,
+    TrueFalsePayload,
     WidgetType,
 )
 
@@ -59,6 +60,7 @@ class RulesValidator:
     def validate(self, payload: QuestionPayload, context: JudgeContext) -> JudgeVerdict:
         dispatch = {
             WidgetType.MCQ_SINGLE: self._validate_mcq,
+            WidgetType.TRUE_FALSE: self._validate_true_false,
         }
         handler = dispatch.get(payload.widget_type)
         if handler is None:
@@ -79,17 +81,6 @@ class RulesValidator:
         if not (2 <= len(payload.options) <= 6):
             issues.append(f"MCQ must have 2-6 options, got {len(payload.options)}")
 
-        # M4 escalation step-down: when the assessment layer requested the
-        # easier stepped-down form, enforce the exact option count so the
-        # ladder shape is deterministic (PLAN_v3.md §9).
-        if context.expected_option_count is not None:
-            if len(payload.options) != context.expected_option_count:
-                issues.append(
-                    f"Escalation step-down requires exactly "
-                    f"{context.expected_option_count} options, got "
-                    f"{len(payload.options)}"
-                )
-
         # Option ids unique
         ids = [o.id for o in payload.options]
         if len(ids) != len(set(ids)):
@@ -105,12 +96,32 @@ class RulesValidator:
         if any(t == stem_l for t in texts):
             issues.append("An option text duplicates the stem")
 
+        self._check_stem_and_concept(payload, context, issues)
+        return JudgeVerdict(valid=not issues, issues=issues, source="rules")
+
+    def _validate_true_false(self, payload: TrueFalsePayload, context: JudgeContext) -> JudgeVerdict:
+        issues: List[str] = []
+        # Stem/statement quality, concept alignment, and dedup are shared.
+        # `is_true` is a bool by schema construction, so there is nothing
+        # further to check deterministically — statement ambiguity and
+        # trivial giveaways are the LLM judge's job.
+        self._check_stem_and_concept(payload, context, issues)
+        return JudgeVerdict(valid=not issues, issues=issues, source="rules")
+
+    def _check_stem_and_concept(
+        self, payload: QuestionPayload, context: JudgeContext, issues: List[str]
+    ) -> None:
+        """Checks shared by all widget types: stem non-trivial, concept
+        alignment (smoke test — the LLM judge does deeper alignment), and no
+        stem reuse for this concept."""
+        stem_l = payload.stem.strip().lower()
+
         # Stem non-trivial
-        if len(payload.stem.strip()) < 10:
+        if len(stem_l) < 10:
             issues.append("Stem too short (<10 chars)")
 
         # Concept alignment: targeted concept must be one of the valid concepts
-        # for this outcome (smoke test — LLM judge does deeper alignment).
+        # for this outcome.
         if context.valid_concepts:
             if payload.concept_tested not in context.valid_concepts:
                 issues.append(
@@ -124,8 +135,6 @@ class RulesValidator:
         }
         if stem_l in prior_stems:
             issues.append("Stem duplicates a previously asked question for this concept")
-
-        return JudgeVerdict(valid=not issues, issues=issues, source="rules")
 
 
 class LLMJudge:
@@ -167,6 +176,20 @@ class LLMJudge:
                 f"Targeted concept: {payload.concept_tested}\n"
                 f"Stem: {payload.stem}\n"
                 f"Options:\n{options_block}\n\n"
+                "Respond EXACTLY in this format:\n"
+                "VERDICT: VALID or INVALID\n"
+                "ISSUES: [comma-separated list of problems, or 'none']\n"
+            )
+        if isinstance(payload, TrueFalsePayload):
+            return (
+                "You are an assessment quality reviewer. Judge this true/false "
+                "question for correctness, clarity, and concept alignment. Reject "
+                "statements that are ambiguous, opinion-based, or trivially "
+                "guessable without understanding the concept.\n\n"
+                f"Outcome: {context.outcome_key}\n"
+                f"Targeted concept: {payload.concept_tested}\n"
+                f"Statement: {payload.stem}\n"
+                f"Correct answer: {'TRUE' if payload.is_true else 'FALSE'}\n\n"
                 "Respond EXACTLY in this format:\n"
                 "VERDICT: VALID or INVALID\n"
                 "ISSUES: [comma-separated list of problems, or 'none']\n"
